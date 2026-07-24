@@ -27,13 +27,20 @@ import {
   scoreGuideAiRelevance,
 } from "./cursor.js";
 import { healthPayload, listDevices, listOtaArtifacts } from "./local.js";
+import { DeployGate, logError, logInfo } from "./security.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const env = loadEnv();
 const repoConfig = loadRepoConfig();
+const deployGate = new DeployGate(15_000);
 
 const app = new Hono();
 app.use("/api/*", cors());
+
+app.onError((err, c) => {
+  logError(`request error: ${err}`);
+  return c.json({ error: "internal error" }, 500);
+});
 
 app.get("/api/health", (c) => c.json(healthPayload(env)));
 
@@ -121,8 +128,18 @@ app.get("/api/repos/:owner/:name/ios", async (c) => {
 });
 
 app.post("/api/deploy", async (c) => {
+  const gate = deployGate.tryAcquire();
+  if (!gate.ok) {
+    return c.json(
+      { error: gate.reason, retryAfterSec: gate.retryAfterSec },
+      429,
+    );
+  }
   try {
     const body = await c.req.json();
+    logInfo(
+      `deploy requested repo=${body.repository} ref=${body.ref} scheme=${body.scheme} mode=${body.deploy_mode || "ota"}`,
+    );
     const result = await dispatchDeploy(env, {
       repository: body.repository,
       ref: body.ref,
@@ -132,9 +149,13 @@ app.post("/api/deploy", async (c) => {
       deploy_mode: body.deploy_mode || repoConfig.defaults.deploy_mode,
       title: body.title,
     });
+    logInfo(`deploy dispatched: ${result.message}`);
     return c.json(result);
   } catch (e) {
+    logError(`deploy failed: ${e}`);
     return c.json({ error: String(e) }, 400);
+  } finally {
+    deployGate.release();
   }
 });
 
