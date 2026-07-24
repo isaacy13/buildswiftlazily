@@ -1,0 +1,154 @@
+name: Deploy iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: "owner/repo to build (e.g. you/GuideAI)"
+        required: true
+        type: string
+      ref:
+        description: "Branch, tag, or SHA"
+        required: true
+        type: string
+        default: main
+      project_path:
+        description: "Relative path to xcodeproj/xcworkspace directory"
+        required: false
+        type: string
+        default: "."
+      scheme:
+        description: "Xcode scheme"
+        required: true
+        type: string
+      configuration:
+        description: "Xcode configuration"
+        required: false
+        type: string
+        default: Release
+      deploy_mode:
+        description: "ota | direct | both"
+        required: true
+        type: choice
+        options:
+          - ota
+          - direct
+          - both
+        default: ota
+      title:
+        description: "Display name on install page"
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: ios-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, macOS, ios]
+    steps:
+      - name: Checkout buildswiftlazily (scripts)
+        uses: actions/checkout@v4
+        with:
+          path: tooling
+
+      - name: Validate inputs
+        env:
+          REPO: ${{ inputs.repository }}
+          REF: ${{ inputs.ref }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+        run: |
+          set -euo pipefail
+          [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "Invalid repository"; exit 1; }
+          [[ "$REF" != *..* && "$REF" != *$'\n'* ]] || { echo "Invalid ref"; exit 1; }
+          [[ "$PROJECT_PATH" != *..* ]] || { echo "Invalid project_path"; exit 1; }
+
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.IOS_REPOS_READ_TOKEN || github.token }}
+          path: target
+
+      - name: Prepare artifact dir
+        id: prep
+        run: |
+          set -euo pipefail
+          AID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+          OUT="$HOME/buildswiftlazily/artifacts/builds/$AID"
+          mkdir -p "$OUT"
+          echo "artifact_id=$AID" >> "$GITHUB_OUTPUT"
+          echo "out_dir=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Build iOS
+        env:
+          BSL_TEAM_ID: ${{ secrets.BSL_TEAM_ID || vars.BSL_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          chmod +x tooling/scripts/*.sh
+          tooling/scripts/build-ios.sh \
+            --root target \
+            --project-path "${{ inputs.project_path }}" \
+            --scheme "${{ inputs.scheme }}" \
+            --configuration "${{ inputs.configuration }}" \
+            --out-dir "${{ steps.prep.outputs.out_dir }}" \
+            --mode "${{ inputs.deploy_mode }}"
+
+      - name: Direct install
+        if: ${{ inputs.deploy_mode == 'direct' || inputs.deploy_mode == 'both' }}
+        run: |
+          set -euo pipefail
+          APP="$(cat "${{ steps.prep.outputs.out_dir }}/app_path.txt" | cut -d= -f2-)"
+          tooling/scripts/install-direct.sh --app "$APP"
+
+      - name: Publish OTA
+        id: ota
+        if: ${{ inputs.deploy_mode == 'ota' || inputs.deploy_mode == 'both' }}
+        env:
+          BSL_TS_HOST: ${{ secrets.BSL_TS_HOST || vars.BSL_TS_HOST }}
+        run: |
+          set -euo pipefail
+          IPA="${{ steps.prep.outputs.out_dir }}/App.ipa"
+          TITLE="${{ inputs.title }}"
+          if [[ -z "$TITLE" ]]; then TITLE="${{ inputs.scheme }}"; fi
+          BID="com.example.app"
+          BVER="1"
+          [[ -f "${{ steps.prep.outputs.out_dir }}/bundle_id.txt" ]] && BID="$(cat "${{ steps.prep.outputs.out_dir }}/bundle_id.txt")"
+          [[ -f "${{ steps.prep.outputs.out_dir }}/bundle_version.txt" ]] && BVER="$(cat "${{ steps.prep.outputs.out_dir }}/bundle_version.txt")"
+          [[ -n "${BSL_TS_HOST:-}" ]] || { echo "Set secret/var BSL_TS_HOST"; exit 1; }
+          set +e
+          OUT="$(tooling/scripts/serve-ota.sh \
+            --ipa "$IPA" \
+            --artifact-id "${{ steps.prep.outputs.artifact_id }}" \
+            --title "$TITLE" \
+            --bundle-id "$BID" \
+            --bundle-version "$BVER" \
+            --ts-host "$BSL_TS_HOST")"
+          STATUS=$?
+          set -e
+          echo "$OUT"
+          INSTALL_URL="$(echo "$OUT" | grep '^INSTALL_URL=' | cut -d= -f2-)"
+          echo "install_url=$INSTALL_URL" >> "$GITHUB_OUTPUT"
+          exit $STATUS
+
+      - name: Sweep old artifacts
+        if: always()
+        run: tooling/scripts/ttl-sweep.sh || true
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## buildswiftlazily deploy"
+            echo ""
+            echo "- repository: \`${{ inputs.repository }}\`"
+            echo "- ref: \`${{ inputs.ref }}\`"
+            echo "- scheme: \`${{ inputs.scheme }}\`"
+            echo "- mode: \`${{ inputs.deploy_mode }}\`"
+            if [[ -n "${{ steps.ota.outputs.install_url }}" ]]; then
+              echo "- install: ${{ steps.ota.outputs.install_url }}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

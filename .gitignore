@@ -1,0 +1,16 @@
+node_modules/
+dist/
+build/
+.env
+.env.local
+config/repos.yaml
+*.ipa
+*.xcarchive
+.DS_Store
+coverage/
+apps/control-plane/dist/
+apps/control-plane/web/dist/
+~/buildswiftlazily/
+.artifacts/
+*.log
+.turbo/
