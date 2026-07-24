@@ -7,6 +7,12 @@ import {
   assertSafeRepo,
 } from "../src/config.js";
 import { scoreGuideAiRelevance } from "../src/cursor.js";
+import {
+  buildInstallHtml,
+  buildItmsUrl,
+  buildManifestPlist,
+} from "../src/ota.js";
+import { DeployGate, redact } from "../src/security.js";
 
 test("detectIosProjects finds workspace and skips Pods", () => {
   const paths = [
@@ -41,7 +47,12 @@ test("assertSafeRelPath rejects absolute and ..", () => {
 
 test("scoreGuideAiRelevance prefers GuideAI agents", () => {
   const a = scoreGuideAiRelevance(
-    { id: "1", name: "GuideAI polish", branches: [{ repoUrl: "github.com/x/GuideAI", branch: "feat" }], updatedAt: new Date().toISOString() },
+    {
+      id: "1",
+      name: "GuideAI polish",
+      branches: [{ repoUrl: "github.com/x/GuideAI", branch: "feat" }],
+      updatedAt: new Date().toISOString(),
+    },
     "x/GuideAI",
   );
   const b = scoreGuideAiRelevance(
@@ -49,4 +60,53 @@ test("scoreGuideAiRelevance prefers GuideAI agents", () => {
     "x/GuideAI",
   );
   assert.ok(a > b);
+});
+
+test("OTA manifest + itms URL", () => {
+  const manifest = buildManifestPlist({
+    baseUrl: "https://mac.tailnet.ts.net/ota/abc",
+    title: "GuideAI",
+    bundleId: "com.example.GuideAI",
+    bundleVersion: "9",
+  });
+  assert.match(manifest, /com\.example\.GuideAI/);
+  assert.match(
+    manifest,
+    /https:\/\/mac\.tailnet\.ts\.net\/ota\/abc\/App\.ipa/,
+  );
+  const itms = buildItmsUrl(
+    "https://mac.tailnet.ts.net/ota/abc/manifest.plist",
+  );
+  assert.ok(itms.startsWith("itms-services://?action=download-manifest&url="));
+  const html = buildInstallHtml({
+    baseUrl: "https://mac.tailnet.ts.net/ota/abc",
+    title: "GuideAI",
+    bundleId: "com.example.GuideAI",
+    bundleVersion: "9",
+  });
+  assert.match(html, /Install on this iPhone/);
+  assert.match(html, /itms-services/);
+});
+
+test("redact strips tokens", () => {
+  const s = redact(
+    "Authorization Bearer ghp_abcdefghijklmnopqrstuvwxyz12 hello",
+    ["supersecretvalue12"],
+  );
+  assert.equal(s.includes("ghp_"), false);
+  assert.match(s, /REDACTED/);
+  assert.equal(
+    redact("x supersecretvalue12 y", ["supersecretvalue12"]),
+    "x [REDACTED] y",
+  );
+});
+
+test("DeployGate enforces single flight and cooldown", () => {
+  const gate = new DeployGate(60_000);
+  assert.equal(gate.tryAcquire().ok, true);
+  assert.equal(gate.tryAcquire().ok, false);
+  gate.release();
+  const again = gate.tryAcquire();
+  assert.equal(again.ok, false);
+  if (!again.ok) assert.ok(again.retryAfterSec > 0);
 });
