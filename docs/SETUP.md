@@ -100,6 +100,8 @@ Open `https://$BSL_TS_HOST/` on the iPhone (Tailscale connected) → **Share →
 
 ## 7. First GuideAI deploy
 
+> **Important:** GitHub only lists `workflow_dispatch` workflows that exist on the repo’s **default branch**. Merge (or cherry-pick) `.github/workflows/deploy-ios.yml` to `main` once, or set `BSL_TOOLING_REF` to a branch that already has the workflow file.
+
 From GitHub Actions (workflow_dispatch) or the PWA:
 
 - Repository: your GuideAI slug

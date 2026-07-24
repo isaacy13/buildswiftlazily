@@ -10,7 +10,7 @@ config/repos.yaml
 coverage/
 apps/control-plane/dist/
 apps/control-plane/web/dist/
-~/buildswiftlazily/
+apps/control-plane/node_modules/
 .artifacts/
 *.log
 .turbo/

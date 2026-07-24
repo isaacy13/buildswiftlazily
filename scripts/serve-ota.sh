@@ -58,8 +58,25 @@ run() {
   if [[ "$DRY_RUN" == "1" ]]; then echo "DRY_RUN: $*"; else "$@"; fi
 }
 
+CONTROL_PORT="${BSL_CONTROL_PORT:-8787}"
+
+control_plane_up() {
+  curl -sf "http://127.0.0.1:${CONTROL_PORT}/api/health" >/dev/null 2>&1
+}
+
 ensure_server() {
-  # PID file for python http.server
+  # Prefer the control plane (serves UI + /ota/*). Avoid resetting Tailscale Serve
+  # out from under it when a deploy finishes.
+  if control_plane_up; then
+    echo "Control plane healthy on :$CONTROL_PORT — reusing it for OTA"
+    if command -v tailscale >/dev/null 2>&1 && [[ "$DRY_RUN" != "1" ]]; then
+      # Ensure Serve points at control plane (idempotent enough for personal use)
+      tailscale serve --bg --https=443 "http://127.0.0.1:${CONTROL_PORT}" >/dev/null 2>&1 || true
+    fi
+    return 0
+  fi
+
+  # Fallback: standalone static server when control plane is not running
   PID_FILE="$ARTIFACT_ROOT/http.pid"
   if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
     echo "HTTP server already running pid=$(cat "$PID_FILE")"
@@ -77,19 +94,19 @@ ensure_server() {
     fi
   fi
 
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "DRY_RUN: tailscale serve --bg --https=443 http://127.0.0.1:$PORT"
+    return 0
+  fi
+
   if ! command -v tailscale >/dev/null 2>&1; then
     echo "tailscale CLI required" >&2
     exit 1
   fi
 
-  if [[ "$DRY_RUN" == "1" ]]; then
-    echo "DRY_RUN: tailscale serve --bg --https=443 http://127.0.0.1:$PORT"
-  else
-    # Reset and set https proxy to local server (Tailscale HTTPS)
-    tailscale serve reset >/dev/null 2>&1 || true
-    tailscale serve --bg --https=443 "http://127.0.0.1:${PORT}"
-    echo "tailscale serve → http://127.0.0.1:${PORT}"
-  fi
+  tailscale serve reset >/dev/null 2>&1 || true
+  tailscale serve --bg --https=443 "http://127.0.0.1:${PORT}"
+  echo "tailscale serve → http://127.0.0.1:${PORT}"
 }
 
 if [[ "$SERVE_ONLY" == "1" ]]; then
