@@ -24,3 +24,6 @@ jobs:
       - name: API smoke
         working-directory: .
         run: ./scripts/smoke-api.sh
+      - name: Script dry-runs
+        working-directory: .
+        run: ./scripts/test-scripts.sh
