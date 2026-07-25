@@ -70,8 +70,19 @@ Edit `config/repos.yaml`:
 Edit `.env`:
 
 - `BSL_TS_HOST`, `BSL_TEAM_ID`, `GITHUB_TOKEN` or `GH_TOKEN`, `CURSOR_API_KEY`
+- `BSL_DEPLOY_ENGINE=local` (default) — builds on this Mac without Actions
+- For TestFlight: `BSL_ASC_KEY_ID`, `BSL_ASC_ISSUER_ID`, and place `AuthKey_<KEY_ID>.p8` in `~/.appstoreconnect/private_keys/`
 
 Create a Cursor API key: https://cursor.com/dashboard/api
+
+### TestFlight API key (optional but recommended)
+
+1. [App Store Connect → Users and Access → Integrations → App Store Connect API](https://appstoreconnect.apple.com/access/integrations/api)
+2. Generate a key (App Manager), download the `.p8` **once**
+3. Note Key ID + Issuer ID → put in `.env`
+4. `mkdir -p ~/.appstoreconnect/private_keys && mv AuthKey_XXX.p8 ~/.appstoreconnect/private_keys/`
+
+In the PWA, choose **TestFlight** as the install method. After upload, open the TestFlight app (processing can take a few minutes).
 
 ## 5. Doctor
 
@@ -83,6 +94,8 @@ Fix anything red before deploying.
 
 ## 6. Control plane + Serve
 
+Prefer **local** engine while the Actions runner is down — the UI defaults to it.
+
 ```bash
 cd apps/control-plane
 npm install
@@ -90,7 +103,7 @@ npm run build
 npm start
 ```
 
-In another terminal (or via launchd — see below):
+In another terminal:
 
 ```bash
 ./scripts/serve-control.sh
@@ -98,18 +111,26 @@ In another terminal (or via launchd — see below):
 
 Open `https://$BSL_TS_HOST/` on the iPhone (Tailscale connected) → **Share → Add to Home Screen**.
 
+### Install modes in the UI
+
+| Mode | When to use |
+|------|-------------|
+| **OTA (Tailscale)** | Default couch path — Ad Hoc IPA over your private Tailscale HTTPS |
+| **TestFlight** | Anywhere, Apple-hosted — needs ASC API key; slower processing |
+| **Direct** | Phone paired to this Mac |
+| **OTA + Direct** | Both |
+
 ## 7. First GuideAI deploy
 
-> **Important:** GitHub only lists `workflow_dispatch` workflows that exist on the repo’s **default branch**. Merge (or cherry-pick) `.github/workflows/deploy-ios.yml` to `main` once, or set `BSL_TOOLING_REF` to a branch that already has the workflow file.
+> **Important:** GitHub only lists `workflow_dispatch` workflows that exist on the repo’s **default branch**. For the **Actions** engine, merge `deploy-ios.yml` to `main` (or set `BSL_TOOLING_REF`). The **local** engine does not need this.
 
-From GitHub Actions (workflow_dispatch) or the PWA:
+From the PWA:
 
-- Repository: your GuideAI slug
-- Ref: branch you want
-- Scheme: GuideAI (or whatever `xcodebuild -list` shows)
-- Mode: `ota`
-
-When the job finishes, open the install URL on the phone in **Safari**.
+1. Pick GuideAI + branch + scheme
+2. Install method: OTA or TestFlight
+3. Build where: **This Mac (local)**
+4. Tap **Build & Install** and watch the live log
+5. When ready: tap **Install on this iPhone** (OTA) or open **TestFlight**
 
 ## 8. Optional launchd (keep UI online)
 

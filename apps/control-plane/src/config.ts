@@ -39,6 +39,8 @@ export type Env = {
   guideAiRepo: string;
   toolingRepo: string;
   toolingRef: string;
+  /** Prefer local builds on the Mac (works when Actions runner is down). */
+  deployEngine: "local" | "actions";
 };
 
 function loadDotEnv(file: string) {
@@ -87,6 +89,8 @@ export function loadEnv(): Env {
     toolingRepo:
       process.env.BSL_TOOLING_REPO || "isaacy13/buildswiftlazily",
     toolingRef: process.env.BSL_TOOLING_REF || "main",
+    deployEngine:
+      process.env.BSL_DEPLOY_ENGINE === "actions" ? "actions" : "local",
   };
 }
 

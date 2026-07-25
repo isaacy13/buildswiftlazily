@@ -14,7 +14,7 @@ Options:
   --team-id ID          Apple Team ID (or BSL_TEAM_ID)
   --bundle-id ID        Override bundle id for ExportOptions (optional)
   --out-dir PATH        Output directory for IPA/app (required)
-  --mode ota|direct|both  Default: both
+  --mode ota|direct|both|testflight  Default: both
   --dry-run             Print actions only
 EOF
 }
@@ -135,19 +135,22 @@ if [[ "$MODE" == "direct" || "$MODE" == "both" ]]; then
   fi
 fi
 
-if [[ "$MODE" == "ota" || "$MODE" == "both" ]]; then
-  EXPORT_PLIST="$OUT_DIR/ExportOptions.plist"
+export_ipa() {
+  local method="$1"
+  local EXPORT_PLIST="$OUT_DIR/ExportOptions.plist"
   if [[ "$DRY_RUN" == "1" ]]; then
-    echo "DRY_RUN: write ExportOptions.plist method=ad-hoc"
-  else
-    # Bundle id optional; Xcode can infer from archive
-    cat > "$EXPORT_PLIST" <<EOF
+    echo "DRY_RUN: write ExportOptions.plist method=$method && exportArchive"
+    : > "$OUT_DIR/App.ipa"
+    echo "IPA_PATH=$OUT_DIR/App.ipa"
+    return 0
+  fi
+  cat > "$EXPORT_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>method</key>
-  <string>ad-hoc</string>
+  <string>${method}</string>
   <key>signingStyle</key>
   <string>automatic</string>
   <key>teamID</key>
@@ -156,37 +159,48 @@ if [[ "$MODE" == "ota" || "$MODE" == "both" ]]; then
   <false/>
   <key>stripSwiftSymbols</key>
   <true/>
+  <key>destination</key>
+  <string>export</string>
 </dict>
 </plist>
 EOF
-    run xcodebuild -exportArchive \
-      -archivePath "$ARCHIVE_PATH" \
-      -exportPath "$EXPORT_DIR" \
-      -exportOptionsPlist "$EXPORT_PLIST" \
-      -allowProvisioningUpdates
-    IPA="$(find "$EXPORT_DIR" -maxdepth 1 -name '*.ipa' | head -1)"
-    if [[ -z "$IPA" ]]; then
-      echo "Export produced no IPA" >&2
-      exit 1
-    fi
-    cp "$IPA" "$OUT_DIR/App.ipa"
-    echo "IPA_PATH=$OUT_DIR/App.ipa" | tee "$OUT_DIR/ipa_path.txt"
-
-    # Best-effort bundle metadata via unzip + PlistBuddy if available
-    if command -v unzip >/dev/null 2>&1; then
-      TMP="$(mktemp -d)"
-      unzip -q -o "$OUT_DIR/App.ipa" -d "$TMP" 'Payload/*.app/Info.plist' || true
-      PLIST="$(find "$TMP/Payload" -name Info.plist | head -1 || true)"
-      if [[ -n "$PLIST" && -x /usr/libexec/PlistBuddy ]]; then
-        /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST" > "$OUT_DIR/bundle_id.txt" || true
-        /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST" > "$OUT_DIR/bundle_version.txt" || true
-        /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST" > "$OUT_DIR/bundle_short_version.txt" || true
-        /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$PLIST" > "$OUT_DIR/bundle_name.txt" 2>/dev/null \
-          || /usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$PLIST" > "$OUT_DIR/bundle_name.txt" || true
-      fi
-      rm -rf "$TMP"
-    fi
+  rm -rf "$EXPORT_DIR"
+  mkdir -p "$EXPORT_DIR"
+  run xcodebuild -exportArchive \
+    -archivePath "$ARCHIVE_PATH" \
+    -exportPath "$EXPORT_DIR" \
+    -exportOptionsPlist "$EXPORT_PLIST" \
+    -allowProvisioningUpdates
+  IPA="$(find "$EXPORT_DIR" -maxdepth 1 -name '*.ipa' | head -1)"
+  if [[ -z "$IPA" ]]; then
+    echo "Export produced no IPA" >&2
+    exit 1
   fi
+  cp "$IPA" "$OUT_DIR/App.ipa"
+  echo "IPA_PATH=$OUT_DIR/App.ipa" | tee "$OUT_DIR/ipa_path.txt"
+
+  if command -v unzip >/dev/null 2>&1; then
+    TMP="$(mktemp -d)"
+    unzip -q -o "$OUT_DIR/App.ipa" -d "$TMP" 'Payload/*.app/Info.plist' || true
+    PLIST="$(find "$TMP/Payload" -name Info.plist | head -1 || true)"
+    if [[ -n "$PLIST" && -x /usr/libexec/PlistBuddy ]]; then
+      /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST" > "$OUT_DIR/bundle_id.txt" || true
+      /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST" > "$OUT_DIR/bundle_version.txt" || true
+      /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST" > "$OUT_DIR/bundle_short_version.txt" || true
+      /usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$PLIST" > "$OUT_DIR/bundle_name.txt" 2>/dev/null \
+        || /usr/libexec/PlistBuddy -c 'Print :CFBundleName' "$PLIST" > "$OUT_DIR/bundle_name.txt" || true
+    fi
+    rm -rf "$TMP"
+  fi
+}
+
+if [[ "$MODE" == "ota" || "$MODE" == "both" ]]; then
+  export_ipa "ad-hoc"
+fi
+
+if [[ "$MODE" == "testflight" ]]; then
+  # App Store / TestFlight distribution signing
+  export_ipa "app-store"
 fi
 
 echo "BUILD_OK out=$OUT_DIR mode=$MODE"

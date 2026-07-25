@@ -157,7 +157,7 @@ export type DeployInput = {
   project_path?: string;
   scheme: string;
   configuration?: string;
-  deploy_mode?: "ota" | "direct" | "both";
+  deploy_mode?: "ota" | "direct" | "both" | "testflight";
   title?: string;
 };
 

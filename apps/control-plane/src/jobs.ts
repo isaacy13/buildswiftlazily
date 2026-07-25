@@ -1,0 +1,75 @@
+import { randomUUID } from "node:crypto";
+
+export type JobStatus = "queued" | "running" | "succeeded" | "failed";
+
+export type DeployJob = {
+  id: string;
+  engine: "local" | "actions";
+  status: JobStatus;
+  repository: string;
+  ref: string;
+  scheme: string;
+  deployMode: string;
+  logs: string[];
+  installUrl?: string;
+  itmsUrl?: string;
+  testflightNote?: string;
+  actionsRunUrl?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt?: string;
+};
+
+export class JobStore {
+  private jobs = new Map<string, DeployJob>();
+  private order: string[] = [];
+
+  create(
+    partial: Omit<DeployJob, "id" | "status" | "logs" | "createdAt" | "updatedAt"> & {
+      status?: JobStatus;
+    },
+  ): DeployJob {
+    const now = new Date().toISOString();
+    const job: DeployJob = {
+      id: randomUUID(),
+      status: partial.status || "queued",
+      logs: [],
+      createdAt: now,
+      updatedAt: now,
+      ...partial,
+    };
+    this.jobs.set(job.id, job);
+    this.order.unshift(job.id);
+    if (this.order.length > 50) {
+      const drop = this.order.pop();
+      if (drop) this.jobs.delete(drop);
+    }
+    return job;
+  }
+
+  get(id: string): DeployJob | undefined {
+    return this.jobs.get(id);
+  }
+
+  list(limit = 20): DeployJob[] {
+    return this.order.slice(0, limit).map((id) => this.jobs.get(id)!).filter(Boolean);
+  }
+
+  appendLog(id: string, line: string): void {
+    const job = this.jobs.get(id);
+    if (!job) return;
+    job.logs.push(line);
+    if (job.logs.length > 400) job.logs.splice(0, job.logs.length - 400);
+    job.updatedAt = new Date().toISOString();
+  }
+
+  patch(id: string, patch: Partial<DeployJob>): DeployJob | undefined {
+    const job = this.jobs.get(id);
+    if (!job) return;
+    Object.assign(job, patch, { updatedAt: new Date().toISOString() });
+    return job;
+  }
+}
+
+export const globalJobs = new JobStore();

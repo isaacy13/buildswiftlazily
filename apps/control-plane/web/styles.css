@@ -94,4 +94,15 @@ button.secondary, a.secondary {
 .error { color: var(--bad); font-size: 0.9rem; margin-top: 0.5rem; }
 .success { color: var(--good); font-size: 0.9rem; margin-top: 0.5rem; }
 
+.banner {
+  background: var(--card); border-radius: var(--radius); padding: 0.9rem 1rem;
+  margin-bottom: 0.75rem; font-size: 0.9rem; line-height: 1.4;
+}
+.banner.warn { border: 1px solid #6b5a00; background: #2a2408; }
+.banner.ok { border: 1px solid #1a4d2e; background: #0f2418; }
+pre.log {
+  background: #000; color: #9ae6b4; font-size: 0.7rem; padding: 0.75rem;
+  border-radius: 10px; overflow: auto; max-height: 12rem; margin-top: 0.75rem;
+  white-space: pre-wrap; word-break: break-word;
+}
 .hidden { display: none !important; }

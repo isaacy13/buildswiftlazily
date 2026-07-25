@@ -1,0 +1,133 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
+import { createApp } from "../src/app.js";
+import { JobStore } from "../src/jobs.js";
+import { runLocalDeploy } from "../src/localDeploy.js";
+import type { Env } from "../src/config.js";
+
+function testEnv(overrides: Partial<Env> = {}): Env {
+  const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bsl-"));
+  return {
+    tsHost: "mac.tailnet.ts.net",
+    controlPort: 8799,
+    otaPort: 8788,
+    teamId: "TEAM123",
+    artifactRoot,
+    artifactTtlDays: 7,
+    githubToken: "",
+    cursorApiKey: "",
+    guideAiRepo: "isaacy13/GuideAI",
+    toolingRepo: "isaacy13/buildswiftlazily",
+    toolingRef: "main",
+    deployEngine: "local",
+    ...overrides,
+  };
+}
+
+const repoConfig = {
+  discovery: { mode: "personal" as const, max_repos: 10, scan_depth: 4 },
+  defaults: {
+    favorite: "guideai",
+    deploy_mode: "ota" as const,
+    configuration: "Release",
+  },
+  repos: [
+    {
+      id: "guideai",
+      repository: "isaacy13/GuideAI",
+      display_name: "GuideAI",
+      favorite: true,
+      scheme: "GuideAI",
+    },
+  ],
+};
+
+test("GET /api/health and /api/setup", async () => {
+  const { app } = createApp({ env: testEnv(), repoConfig });
+  const health = await app.request("/api/health");
+  assert.equal(health.status, 200);
+  const h = await health.json();
+  assert.equal(h.ok, true);
+  assert.equal(h.deployEngine, "local");
+
+  const setup = await app.request("/api/setup");
+  assert.equal(setup.status, 200);
+  const s = await setup.json();
+  assert.ok(Array.isArray(s.items));
+  assert.ok(s.items.some((i: { id: string }) => i.id === "github"));
+});
+
+test("GET /api/repos without token returns pinned GuideAI", async () => {
+  const { app } = createApp({ env: testEnv(), repoConfig });
+  const res = await app.request("/api/repos");
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.ok(data.repos.some((r: { full_name: string }) => r.full_name === "isaacy13/GuideAI"));
+  assert.ok(data.warning);
+});
+
+test("POST /api/deploy local starts job and dry-run succeeds", async () => {
+  process.env.BSL_DRY_RUN = "1";
+  const jobs = new JobStore();
+  const env = testEnv();
+  const { app } = createApp({ env, repoConfig, jobs });
+  const res = await app.request("/api/deploy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      repository: "isaacy13/GuideAI",
+      ref: "main",
+      scheme: "GuideAI",
+      deploy_mode: "ota",
+      engine: "local",
+    }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.engine, "local");
+  assert.ok(body.jobId);
+
+  // Wait for async job
+  let job = jobs.get(body.jobId)!;
+  for (let i = 0; i < 40 && job.status !== "succeeded" && job.status !== "failed"; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    job = jobs.get(body.jobId)!;
+  }
+  assert.equal(job.status, "succeeded", job.logs.join("\n"));
+  assert.ok(job.installUrl?.includes("/ota/"));
+  delete process.env.BSL_DRY_RUN;
+});
+
+test("local TestFlight dry-run job", async () => {
+  process.env.BSL_DRY_RUN = "1";
+  const jobs = new JobStore();
+  const env = testEnv();
+  const job = jobs.create({
+    engine: "local",
+    repository: "isaacy13/GuideAI",
+    ref: "main",
+    scheme: "GuideAI",
+    deployMode: "testflight",
+  });
+  await runLocalDeploy(env, jobs, job.id, {
+    repository: "isaacy13/GuideAI",
+    ref: "main",
+    scheme: "GuideAI",
+    deploy_mode: "testflight",
+  });
+  const done = jobs.get(job.id)!;
+  assert.equal(done.status, "succeeded", done.logs.join("\n"));
+  assert.ok(done.testflightNote);
+  delete process.env.BSL_DRY_RUN;
+});
+
+test("config exposes testflight mode", async () => {
+  const { app } = createApp({ env: testEnv(), repoConfig });
+  const res = await app.request("/api/config");
+  const data = await res.json();
+  assert.ok(data.modes.includes("testflight"));
+  assert.ok(data.engines.includes("local"));
+});
