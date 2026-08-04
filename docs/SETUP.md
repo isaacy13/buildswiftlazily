@@ -195,6 +195,7 @@ launchctl load ~/Library/LaunchAgents/com.buildswiftlazily.control.plist
 | Installs but won’t launch | UDID missing from active Ad Hoc profile → §1a + refresh profile + rebuild |
 | `devicectl` finds nothing | Pair USB/Wi‑Fi or use OTA |
 | Actions 404 | `deploy-ios.yml` on `BSL_TOOLING_REF`, or use local engine |
+| `Could not get GOOGLE_APP_ID` / ARCHIVE FAILED | Gitignored `GoogleService-Info.plist` missing from tarball — set `BSL_CHECKOUT_INJECT` (see `config/env.example`) |
 
 ## Next
 
