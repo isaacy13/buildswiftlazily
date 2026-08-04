@@ -15,7 +15,9 @@ concurrency:
 
 jobs:
   validate:
-    runs-on: [self-hosted, macOS, ios]
+    # Default self-hosted Mac labels from the Actions installer are self-hosted + macOS (+ arch).
+    # Optional extra label `ios` is nice-to-have; don't require it or first jobs sit queued forever.
+    runs-on: [self-hosted, macOS]
     timeout-minutes: 25
     steps:
       - name: Checkout

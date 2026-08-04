@@ -48,7 +48,8 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: [self-hosted, macOS, ios]
+    # Prefer a Mac self-hosted runner. Extra `ios` label is optional (see docs/SETUP.md).
+    runs-on: [self-hosted, macOS]
     steps:
       - name: Checkout buildswiftlazily (scripts)
         uses: actions/checkout@v4

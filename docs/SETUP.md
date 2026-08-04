@@ -43,8 +43,9 @@ tailscale status --self
 
 1. Repo → **Settings → Actions → Runners → New self-hosted runner** (macOS)
 2. Install and start the runner as a service so it survives logout
-3. Add labels: `self-hosted`, `macOS`, `ios` (workflow requires these)
+3. Add labels: `self-hosted`, `macOS` (installer usually adds these). Optional: also add `ios` for clarity — workflows match on `self-hosted` + `macOS`.
 4. Ensure the runner user can run `xcodebuild` and access your signing keychain
+5. Keep the runner online (LaunchAgent/service) so `macOS validate` / deploy jobs do not sit queued
 
 ### Secrets (repo `buildswiftlazily`)
 
