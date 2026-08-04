@@ -69,7 +69,7 @@ On the phone (Tailscale connected):
 3. Status → paste **API token** from `.env` (`BSL_API_TOKEN`) once
 4. Pick repo / branch / scheme → **Build & Install**
 
-Full checklist (UDID, TestFlight key, runner, launchd): **[docs/SETUP.md](docs/SETUP.md)**.
+Full checklist (Apple Distribution vs Ad Hoc, UDID, TestFlight, runner): **[docs/SETUP.md](docs/SETUP.md)**.
 
 ## Install modes
 
