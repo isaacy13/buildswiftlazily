@@ -13,7 +13,7 @@ echo "== buildswiftlazily bootstrap =="
 
 if [[ ! -f config/repos.yaml ]]; then
   cp config/repos.example.yaml config/repos.yaml
-  echo "Created config/repos.yaml — set the real GuideAI owner/repo slug."
+  echo "Created config/repos.yaml — set your app owner/repo slug."
 else
   echo "config/repos.yaml already present"
 fi
@@ -170,9 +170,9 @@ cd "$ROOT"
 
 echo
 echo "== bootstrap complete =="
-echo "1. Edit .env — GITHUB_TOKEN, BSL_TEAM_ID, BSL_TS_HOST (if unset), optional ASC + CURSOR keys"
-echo "2. Edit config/repos.yaml — real GuideAI slug"
+echo "1. Edit .env — GITHUB_TOKEN, BSL_TEAM_ID, BSL_TS_HOST (if unset); confirm BSL_API_TOKEN"
+echo "2. Edit config/repos.yaml — your app owner/repo slug"
 echo "3. Start:  ./scripts/start.sh"
-echo "4. Phone (Tailscale on): https://\$BSL_TS_HOST/  → Add to Home Screen → Build"
+echo "4. Phone (Tailscale on): https://\$BSL_TS_HOST/ → Add to Home Screen → paste API token in Status → Build"
 echo
 echo "Default engine is local (this Mac). Actions runner is optional."

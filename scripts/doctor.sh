@@ -116,12 +116,18 @@ if [[ -n "${GITHUB_TOKEN:-}${GH_TOKEN:-}" ]]; then
 else
   note "No GITHUB_TOKEN — relying on gh auth if available"
 fi
-if [[ -n "${BSL_GUIDEAI_REPO:-}" && "$BSL_GUIDEAI_REPO" != "YOUR_ORG_OR_USER/GuideAI" ]]; then
+if [[ -n "${BSL_GUIDEAI_REPO:-}" && ! "$BSL_GUIDEAI_REPO" =~ YOUR_ ]]; then
   pass "BSL_GUIDEAI_REPO=$BSL_GUIDEAI_REPO"
 else
-  if [[ -f "$ROOT/config/repos.yaml" ]] && grep -q 'YOUR_ORG_OR_USER/GuideAI' "$ROOT/config/repos.yaml" 2>/dev/null; then
-    note "GuideAI slug still placeholder in config/repos.yaml"
+  if [[ -f "$ROOT/config/repos.yaml" ]] && grep -qE 'YOUR_ORG_OR_USER/|YOUR_GITHUB_USER/' "$ROOT/config/repos.yaml" 2>/dev/null; then
+    note "App slug still placeholder in config/repos.yaml — set your owner/repo"
   fi
+fi
+
+if [[ -n "${BSL_API_TOKEN:-}" ]]; then
+  pass "BSL_API_TOKEN set"
+else
+  note "BSL_API_TOKEN unset — API will reject requests unless BSL_ALLOW_INSECURE_API=1"
 fi
 
 echo

@@ -121,9 +121,10 @@ export async function buildSetupChecklist(env: Env): Promise<{
   if (reposYaml) {
     try {
       const text = fs.readFileSync(reposYamlPath, "utf8");
-      if (/YOUR_ORG_OR_USER\/GuideAI/.test(text) && !guideConfigured) {
+      const stillPlaceholder = /YOUR_ORG_OR_USER\/|YOUR_GITHUB_USER\//.test(text);
+      if (stillPlaceholder && !guideConfigured) {
         guideConfigured = false;
-      } else if (!/YOUR_ORG_OR_USER\/GuideAI/.test(text)) {
+      } else if (!stillPlaceholder) {
         guideConfigured = true;
       }
     } catch {
@@ -132,10 +133,20 @@ export async function buildSetupChecklist(env: Env): Promise<{
   }
   items.push({
     id: "repos",
-    label: "config/repos.yaml present with GuideAI slug",
+    label: "config/repos.yaml present with a real app slug",
     ok: reposYaml && guideConfigured,
     required: false,
-    hint: "Copy from config/repos.example.yaml and set GuideAI slug",
+    hint: "Copy from config/repos.example.yaml and set owner/repo",
+  });
+
+  items.push({
+    id: "api_token",
+    label: "BSL_API_TOKEN set (PWA Status tab)",
+    ok: Boolean(env.apiToken) || env.allowInsecureApi,
+    required: true,
+    hint: env.allowInsecureApi
+      ? "BSL_ALLOW_INSECURE_API=1 — OK for smoke only"
+      : "bootstrap generates one; paste into Status → API token on the phone",
   });
 
   const readyForLocalBuild = isDarwin && xcode && Boolean(env.githubToken);

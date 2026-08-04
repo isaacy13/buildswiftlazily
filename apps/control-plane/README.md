@@ -1,17 +1,18 @@
 # Control plane
 
-TypeScript (Hono) API + Vite mobile PWA.
+TypeScript (Hono) API + Vite mobile PWA. Listens on `127.0.0.1` only; expose via Tailscale Serve from the repo root scripts.
+
+See the root [README](../../README.md), [docs/SETUP.md](../../docs/SETUP.md), and [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
 
 ## Develop
 
 ```bash
 cp ../../config/env.example ../../.env
 cp ../../config/repos.example.yaml ../../config/repos.yaml
-# edit GuideAI slug + tokens
+# edit app slug + tokens (BSL_API_TOKEN is required unless BSL_ALLOW_INSECURE_API=1)
 
 npm install
 npm run dev          # API on :8787
-# optional: npm run build:web && open dist via API static
 ```
 
 In another terminal from repo root:
@@ -29,10 +30,18 @@ npm run build
 
 ## Production on Mac
 
+Prefer from repo root:
+
+```bash
+./scripts/start.sh
+```
+
+Or:
+
 ```bash
 npm run build
 npm start
 ./scripts/serve-control.sh
 ```
 
-Or use the launchd example under `scripts/launchd/`.
+Launchd example: `scripts/launchd/com.buildswiftlazily.control.plist.example`.

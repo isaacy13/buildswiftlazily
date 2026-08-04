@@ -4,26 +4,26 @@
 # config/repos.yaml is gitignored so your private slugs stay local.
 
 discovery:
-  # List all personal repos for the authenticated GitHub user
+  # List personal repos for the authenticated GitHub user
   mode: personal
-  # Max repos to scan for iOS markers when refreshing cache
+  # Max repos to list when refreshing
   max_repos: 100
-  # Directory depth when scanning a checkout for xcodeproj/xcworkspace
+  # Directory depth when scanning a tree for xcodeproj/xcworkspace
   scan_depth: 4
 
 defaults:
-  # Pinned favorite shown first in the PWA (must match a repos[].id below or a discovered name)
-  favorite: guideai
+  # Pinned favorite shown first in the PWA (must match a repos[].id below)
+  favorite: myapp
   deploy_mode: ota
   configuration: Release
 
 repos:
-  # Primary day-1 target — set the real owner/name for GuideAI
-  - id: guideai
-    repository: YOUR_ORG_OR_USER/GuideAI
-    display_name: GuideAI
+  # Day-1 target — set your real owner/name (GuideAI is fine if that's your app)
+  - id: myapp
+    repository: YOUR_ORG_OR_USER/YourApp
+    display_name: YourApp
     # Optional overrides once you know them:
     # project_path: .
-    # scheme: GuideAI
-    # bundle_id: com.example.GuideAI
+    # scheme: YourApp
+    # bundle_id: com.example.YourApp
     favorite: true

@@ -13,7 +13,7 @@ set -a; source "$ROOT/.env"; set +a
 
 if [[ ! -f config/repos.yaml ]]; then
   cp config/repos.example.yaml config/repos.yaml
-  echo "Created config/repos.yaml — edit GuideAI slug."
+  echo "Created config/repos.yaml — edit your app owner/repo slug."
 fi
 
 if [[ ! -d apps/control-plane/node_modules || ! -f apps/control-plane/dist/server.js ]]; then
