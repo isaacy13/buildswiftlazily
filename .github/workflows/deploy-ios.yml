@@ -61,11 +61,22 @@ jobs:
           REPO: ${{ inputs.repository }}
           REF: ${{ inputs.ref }}
           PROJECT_PATH: ${{ inputs.project_path }}
+          SCHEME: ${{ inputs.scheme }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          TITLE: ${{ inputs.title }}
         run: |
           set -euo pipefail
           [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "Invalid repository"; exit 1; }
-          [[ "$REF" != *..* && "$REF" != *$'\n'* ]] || { echo "Invalid ref"; exit 1; }
+          [[ "$REF" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "Invalid ref"; exit 1; }
+          [[ "$REF" != *..* ]] || { echo "Invalid ref"; exit 1; }
+          [[ "$PROJECT_PATH" =~ ^[A-Za-z0-9._/-]+$ || "$PROJECT_PATH" == "." ]] || { echo "Invalid project_path"; exit 1; }
           [[ "$PROJECT_PATH" != *..* ]] || { echo "Invalid project_path"; exit 1; }
+          [[ "$SCHEME" =~ ^[A-Za-z0-9._+\ -]+$ ]] || { echo "Invalid scheme"; exit 1; }
+          [[ "$CONFIGURATION" =~ ^[A-Za-z0-9._+-]+$ ]] || { echo "Invalid configuration"; exit 1; }
+          # Title may be empty; when set must match scheme-safe charset
+          if [[ -n "$TITLE" ]] && [[ ! "$TITLE" =~ ^[A-Za-z0-9._+\ -]+$ ]]; then
+            echo "Invalid title"; exit 1
+          fi
 
       - name: Checkout target repository
         uses: actions/checkout@v4
@@ -85,25 +96,38 @@ jobs:
           echo "artifact_id=$AID" >> "$GITHUB_OUTPUT"
           echo "out_dir=$OUT" >> "$GITHUB_OUTPUT"
 
+      # Pass untrusted workflow_dispatch values only via env — never ${{ inputs.* }}
+      # inside shell strings (script-injection).
       - name: Build iOS
         env:
           BSL_TEAM_ID: ${{ secrets.BSL_TEAM_ID || vars.BSL_TEAM_ID }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+          SCHEME: ${{ inputs.scheme }}
+          CONFIGURATION: ${{ inputs.configuration }}
+          DEPLOY_MODE: ${{ inputs.deploy_mode }}
+          OUT_DIR: ${{ steps.prep.outputs.out_dir }}
         run: |
           set -euo pipefail
           chmod +x tooling/scripts/*.sh
           tooling/scripts/build-ios.sh \
             --root target \
-            --project-path "${{ inputs.project_path }}" \
-            --scheme "${{ inputs.scheme }}" \
-            --configuration "${{ inputs.configuration }}" \
-            --out-dir "${{ steps.prep.outputs.out_dir }}" \
-            --mode "${{ inputs.deploy_mode }}"
+            --project-path "$PROJECT_PATH" \
+            --scheme "$SCHEME" \
+            --configuration "$CONFIGURATION" \
+            --out-dir "$OUT_DIR" \
+            --mode "$DEPLOY_MODE"
 
       - name: Direct install
         if: ${{ inputs.deploy_mode == 'direct' || inputs.deploy_mode == 'both' }}
+        env:
+          OUT_DIR: ${{ steps.prep.outputs.out_dir }}
         run: |
           set -euo pipefail
-          APP="$(cat "${{ steps.prep.outputs.out_dir }}/app_path.txt" | cut -d= -f2-)"
+          APP="$(cut -d= -f2- < "$OUT_DIR/app_path.txt")"
+          case "$APP" in
+            "$OUT_DIR"/*) ;;
+            *) echo "App path escapes out_dir"; exit 1 ;;
+          esac
           tooling/scripts/install-direct.sh --app "$APP"
 
       - name: Publish OTA
@@ -111,20 +135,29 @@ jobs:
         if: ${{ inputs.deploy_mode == 'ota' || inputs.deploy_mode == 'both' }}
         env:
           BSL_TS_HOST: ${{ secrets.BSL_TS_HOST || vars.BSL_TS_HOST }}
+          OUT_DIR: ${{ steps.prep.outputs.out_dir }}
+          ARTIFACT_ID: ${{ steps.prep.outputs.artifact_id }}
+          TITLE: ${{ inputs.title }}
+          SCHEME: ${{ inputs.scheme }}
         run: |
           set -euo pipefail
-          IPA="${{ steps.prep.outputs.out_dir }}/App.ipa"
-          TITLE="${{ inputs.title }}"
-          if [[ -z "$TITLE" ]]; then TITLE="${{ inputs.scheme }}"; fi
+          IPA="$OUT_DIR/App.ipa"
+          if [[ -z "$TITLE" ]]; then TITLE="$SCHEME"; fi
           BID="com.example.app"
           BVER="1"
-          [[ -f "${{ steps.prep.outputs.out_dir }}/bundle_id.txt" ]] && BID="$(cat "${{ steps.prep.outputs.out_dir }}/bundle_id.txt")"
-          [[ -f "${{ steps.prep.outputs.out_dir }}/bundle_version.txt" ]] && BVER="$(cat "${{ steps.prep.outputs.out_dir }}/bundle_version.txt")"
+          if [[ -f "$OUT_DIR/bundle_id.txt" ]]; then
+            BID="$(tr -d '\r\n' < "$OUT_DIR/bundle_id.txt")"
+            [[ "$BID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "Invalid bundle id from IPA"; exit 1; }
+          fi
+          if [[ -f "$OUT_DIR/bundle_version.txt" ]]; then
+            BVER="$(tr -d '\r\n' < "$OUT_DIR/bundle_version.txt")"
+            [[ "$BVER" =~ ^[A-Za-z0-9._+-]+$ ]] || { echo "Invalid bundle version from IPA"; exit 1; }
+          fi
           [[ -n "${BSL_TS_HOST:-}" ]] || { echo "Set secret/var BSL_TS_HOST"; exit 1; }
           set +e
           OUT="$(tooling/scripts/serve-ota.sh \
             --ipa "$IPA" \
-            --artifact-id "${{ steps.prep.outputs.artifact_id }}" \
+            --artifact-id "$ARTIFACT_ID" \
             --title "$TITLE" \
             --bundle-id "$BID" \
             --bundle-version "$BVER" \
@@ -142,9 +175,10 @@ jobs:
           BSL_ASC_KEY_ID: ${{ secrets.BSL_ASC_KEY_ID }}
           BSL_ASC_ISSUER_ID: ${{ secrets.BSL_ASC_ISSUER_ID }}
           API_PRIVATE_KEYS_DIR: ${{ secrets.BSL_ASC_KEYS_DIR || vars.BSL_ASC_KEYS_DIR }}
+          OUT_DIR: ${{ steps.prep.outputs.out_dir }}
         run: |
           set -euo pipefail
-          tooling/scripts/upload-testflight.sh --ipa "${{ steps.prep.outputs.out_dir }}/App.ipa"
+          tooling/scripts/upload-testflight.sh --ipa "$OUT_DIR/App.ipa"
 
       - name: Sweep old artifacts
         if: always()
@@ -152,18 +186,24 @@ jobs:
 
       - name: Job summary
         if: always()
+        env:
+          REPO: ${{ inputs.repository }}
+          REF: ${{ inputs.ref }}
+          SCHEME: ${{ inputs.scheme }}
+          DEPLOY_MODE: ${{ inputs.deploy_mode }}
+          INSTALL_URL: ${{ steps.ota.outputs.install_url }}
         run: |
           {
             echo "## buildswiftlazily deploy"
             echo ""
-            echo "- repository: \`${{ inputs.repository }}\`"
-            echo "- ref: \`${{ inputs.ref }}\`"
-            echo "- scheme: \`${{ inputs.scheme }}\`"
-            echo "- mode: \`${{ inputs.deploy_mode }}\`"
-            if [[ -n "${{ steps.ota.outputs.install_url }}" ]]; then
-              echo "- install: ${{ steps.ota.outputs.install_url }}"
+            echo "- repository: \`$REPO\`"
+            echo "- ref: \`$REF\`"
+            echo "- scheme: \`$SCHEME\`"
+            echo "- mode: \`$DEPLOY_MODE\`"
+            if [[ -n "${INSTALL_URL:-}" ]]; then
+              echo "- install: $INSTALL_URL"
             fi
-            if [[ "${{ inputs.deploy_mode }}" == "testflight" ]]; then
+            if [[ "$DEPLOY_MODE" == "testflight" ]]; then
               echo "- TestFlight: check App Store Connect / TestFlight app after processing"
             fi
           } >> "$GITHUB_STEP_SUMMARY"

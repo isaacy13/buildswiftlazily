@@ -1,16 +1,19 @@
 # Security model — buildswiftlazily
 
-Personal, single-operator tooling. Threat model is “don’t leak my IPAs, tokens, or signing material,” not multi-tenant SaaS.
+Personal, **single-operator** tooling. Threat model is “don’t leak my IPAs, tokens, or signing material,” not multi-tenant SaaS.
+
+This repository is **public**. Forks and clones must bring their **own** secrets and Apple material — never copy `.env`, keychains, or PATs from another machine.
 
 ## Trust boundaries
 
 | Layer | Control |
 |-------|---------|
-| Network | **Tailscale Serve only** (not Funnel). UI and IPA/manifest URLs are unreachable off-tailnet. |
+| Network | **Tailscale Serve only** (not Funnel). UI and IPA/manifest URLs are unreachable off-tailnet. Control plane binds **127.0.0.1** only. |
+| App API | **`BSL_API_TOKEN` required** (Bearer / `X-BSL-Token`) on all `/api/*` except health. Opt out only with explicit `BSL_ALLOW_INSECURE_API=1` (smoke/dev). Same-origin only (no open CORS). |
 | Apple install | **Ad Hoc** provisioning — only registered UDIDs can install. |
 | Secrets | Cursor API key, GitHub PAT, signing material stay on the Mac / GitHub Actions secrets. Never shipped to the browser bundle. |
-| Build inputs | Repo allowlist / personal-account scope; sanitize `ref` and paths; no shell interpolation of untrusted strings. |
-| Audit | Every deploy creates a GitHub Actions run. |
+| Build inputs | Sanitize `ref`, scheme, paths, titles; no shell interpolation of untrusted strings (Actions inputs via `env:` only). |
+| Audit | Every Actions deploy creates a GitHub Actions run; local jobs keep redacted logs. |
 
 ## Why not Cloudflare Access in front of IPAs
 
@@ -19,9 +22,13 @@ Apple’s `itms-services` installer fetches the manifest **without** browser Acc
 ## Secret handling
 
 - Store tokens in `.env` (`chmod 600`) or macOS Keychain — `.env` is gitignored
-- Prefer fine-grained PAT: Contents Read on needed repos; Actions Write only on `buildswiftlazily` if dispatching remotely
-- If importing `.p12` in CI on this self-hosted runner, use a temp keychain and **always** delete it in an `if: always()` step
-- Never echo secrets in logs; redact in control-plane logging
+- Prefer fine-grained PAT: Contents Read on needed repos; Actions Write only on your `buildswiftlazily` fork if dispatching remotely
+- Set `BSL_API_TOKEN` (`openssl rand -hex 24`; bootstrap auto-generates) and paste it once in the PWA Status tab (stored in `localStorage` on that device)
+- Do **not** set `BSL_ALLOW_INSECURE_API=1` on a Tailscale-exposed Mac — that re-enables cross-site deploy CSRF from any page you browse while on-tailnet
+- GitHub source tarballs are listed before extract (reject symlinks/hardlinks/`..`); post-extract walk denies symlink escapes
+- If importing `.p12` in CI on a self-hosted runner, use a temp keychain and **always** delete it in an `if: always()` step
+- Never echo secrets in logs; control-plane redacts tokens in console + job logs
+- Never enable **Tailscale Funnel** for this Serve endpoint
 
 ## Artifact hygiene
 
@@ -36,13 +43,24 @@ Apple’s `itms-services` installer fetches the manifest **without** browser Acc
 - Keep the Mac awake / prevent sleep during builds, or use `caffeinate` in scripts
 - Tailscale ACLs: only your user/devices can reach the Serve port
 - Don’t expose the Actions runner webhook beyond GitHub’s outbound model
+- Single-flight deploy gate: only one local build at a time (+ short cooldown)
 
 ## What this does **not** protect against
 
-- Someone already on your Tailscale identity / stolen laptop session
+- Someone with your Tailscale identity **and** the device-local API token / stolen laptop session
 - Malicious code in a branch you voluntarily build (treat branches like local `xcodebuild`)
 - Compromised Apple Developer account
+- Publishing this tooling publicly does **not** publish your IPAs — but a misconfigured Funnel or missing API token would
 
-## Reporting
+## Fork checklist
 
-This is a private personal repo. If you fork it, rotate all tokens and regenerate signing material before first use.
+1. Generate a new `BSL_API_TOKEN`; never reuse another operator’s `.env`
+2. Create your own GitHub PAT / Cursor key / ASC `.p8`
+3. Set `BSL_TOOLING_REPO` to your fork
+4. Regenerate or use your own Apple signing identities and profiles
+
+## Reporting vulnerabilities
+
+Please report security issues privately via GitHub **Security Advisories** on this repository (Prefer “Report a vulnerability”), or contact the maintainer through GitHub. Do not open public issues that include exploit details or secrets.
+
+Please include: affected version/commit, reproduction steps, and impact. We aim to acknowledge reports promptly; this is a small personal project, so fix timelines vary.

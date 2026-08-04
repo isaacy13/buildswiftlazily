@@ -1,144 +1,183 @@
 # Setup — buildswiftlazily
 
-One-time setup on the **same Mac** that runs your GitHub Actions self-hosted runner and Xcode.
+One-time setup on the **Mac with Xcode**. Replace example app names with your `owner/repo`, scheme, and bundle id.
 
-## 1. Apple Developer — register iPhone UDID
-
-Ad Hoc OTA only installs on devices whose UDID is in the provisioning profile.
-
-### Get the UDID
-
-1. Plug the iPhone into the Mac → tap **Trust**.
-2. **Xcode → Window → Devices and Simulators → Devices** → select iPhone → copy **Identifier**.
-3. Or **Finder** → select iPhone → click the info line until **UDID** appears → copy.
-
-### Register the device
-
-1. Open [Devices](https://developer.apple.com/account/resources/devices/list)
-2. **+** → name (e.g. `Isaac iPhone`) → paste UDID → iPhone → Register
-3. Create or edit an **Ad Hoc** provisioning profile for your GuideAI App ID and **include this device**
-4. On the Mac: **Xcode → Settings → Accounts → Download Manual Profiles**, or rely on `-allowProvisioningUpdates` during build
-5. On iPhone:
-   - **Settings → Privacy & Security → Developer Mode** → On (reboot if asked)
-   - After first install: **Settings → General → VPN & Device Management** → trust your developer certificate if prompted
-
-## 2. Tailscale (Mac + iPhone)
-
-2. Install Tailscale on the **Mac** and **iPhone**; sign into the **same** tailnet
-3. On macOS, ensure the **CLI** is available (doctor looks in PATH and `Tailscale.app`):
-   - Tailscale menu → **CLI** install, or `brew install tailscale`
-4. Admin console → enable **MagicDNS** and **HTTPS Certificates**:  
-   https://login.tailscale.com/admin/dns  
-   https://login.tailscale.com/admin/settings/features
-5. On the Mac, note the hostname:
+## 0. Clone & bootstrap
 
 ```bash
-tailscale status --self
-# e.g. isaac-macbook.tailnet-xxxx.ts.net
-```
-
-6. Put that hostname in `.env` as `TS_HOST` / `BSL_TS_HOST` (bootstrap often fills this)
-
-> macOS GUI Tailscale cannot path-serve folders directly. `scripts/serve-ota.sh` runs a local HTTP server and points `tailscale serve` at it.
-
-## 3. GitHub self-hosted runner
-
-1. Repo → **Settings → Actions → Runners → New self-hosted runner** (macOS)
-2. Install and start the runner as a service so it survives logout
-3. Add labels: `self-hosted`, `macOS` (installer usually adds these). Optional: also add `ios` for clarity — workflows match on `self-hosted` + `macOS`.
-4. Ensure the runner user can run `xcodebuild` and access your signing keychain
-5. Keep the runner online (LaunchAgent/service) so `macOS validate` / deploy jobs do not sit queued
-
-### Secrets (repo `buildswiftlazily`)
-
-| Secret | Purpose |
-|--------|---------|
-| `IOS_REPOS_READ_TOKEN` | Fine-grained PAT: **Contents: Read** on personal (and GuideAI) repos |
-| Optional signing secrets | Only if you import `.p12` / profiles per job instead of using the Mac login keychain |
-
-For a personal Mac, keeping certs in the login keychain is simplest. Prefer temp-keychain import + cleanup if the machine is shared.
-
-## 4. First-run bootstrap
-
-```bash
+git clone https://github.com/YOUR_USER/buildswiftlazily.git
+cd buildswiftlazily
 ./scripts/bootstrap.sh
 ```
 
-This copies `config/env.example` → `.env` and `repos.example.yaml` → `repos.yaml`, tries to fill `BSL_TS_HOST` from Tailscale, points `BSL_TOOLING_REF` at your current branch if `deploy-ios.yml` is not on `main` yet, runs doctor, and builds the control plane.
+Creates `.env` (`chmod 600`, generates `BSL_API_TOKEN`), `config/repos.yaml`, fills `BSL_TS_HOST` when Tailscale is up, builds the control plane, runs doctor.
 
-Edit `config/repos.yaml`:
+## 1. Apple signing (Ad Hoc / OTA)
 
-- Set GuideAI `repository: owner/GuideAI` (exact slug)
-- Optionally set `scheme` / `project_path`
+OTA and Direct need an **Ad Hoc** signed IPA. TestFlight uses **App Store** signing instead (see §5).
 
-Edit `.env`:
+### What you actually need
 
-- `BSL_TS_HOST`, `BSL_TEAM_ID`, `GITHUB_TOKEN` or `GH_TOKEN`, `CURSOR_API_KEY`
-- `BSL_DEPLOY_ENGINE=local` (default) — builds on this Mac without Actions
-- For TestFlight: `BSL_ASC_KEY_ID`, `BSL_ASC_ISSUER_ID`, and place `AuthKey_<KEY_ID>.p8` in `~/.appstoreconnect/private_keys/`
+| Piece | Role |
+|-------|------|
+| Registered **device UDID** | Must be listed in the Ad Hoc profile |
+| **App ID** | Bundle id, e.g. `com.you.YourApp` |
+| **Apple Distribution** certificate | Required for Ad Hoc (and App Store). **Not** the same as Apple Development |
+| Ad Hoc **provisioning profile** | Ties App ID + Distribution cert + device list |
 
-Create a Cursor API key: https://cursor.com/dashboard/api
+This repo’s `build-ios.sh` uses **automatic signing** (`-allowProvisioningUpdates`). Prefer letting Xcode create/refresh the profile after the UDID is registered. Manual portal steps are for when automatic fails or you want an explicit profile.
 
-### TestFlight API key (optional but recommended)
+### 1a. Register the iPhone UDID
 
-1. [App Store Connect → Users and Access → Integrations → App Store Connect API](https://appstoreconnect.apple.com/access/integrations/api)
-2. Generate a key (App Manager), download the `.p8` **once**
-3. Note Key ID + Issuer ID → put in `.env`
-4. `mkdir -p ~/.appstoreconnect/private_keys && mv AuthKey_XXX.p8 ~/.appstoreconnect/private_keys/`
+1. Plug in → Trust.
+2. **Xcode → Window → Devices and Simulators → Devices** → copy **Identifier** (or Finder → iPhone → click the info line until UDID shows).
+3. [Devices](https://developer.apple.com/account/resources/devices/list) → **+** → paste UDID → iPhone → Register.
 
-In the PWA, choose **TestFlight** as the install method. After upload, open the TestFlight app (processing can take a few minutes).
+On the phone: **Settings → Privacy & Security → Developer Mode** → On.
 
-## 5. Doctor
+### 1b. Preferred: automatic signing (matches this repo)
+
+1. Open your app in Xcode once → **Signing & Capabilities** → Team = your paid team → leave **Automatically manage signing** on.
+2. Set `BSL_TEAM_ID` in `.env` (10 chars). Find it: [Membership](https://developer.apple.com/account#MembershipDetailsCard), or:
+
+```bash
+security find-identity -v -p codesigning
+# look for (XXXXXXXXXX) after Apple Distribution / Development
+```
+
+3. First local build with this tooling will refresh profiles. If export fails on signing, do §1c once, then rebuild.
+
+### 1c. Manual Ad Hoc profile (portal)
+
+**Why it’s asking for a new certificate:** Ad Hoc profiles can only use an **Apple Distribution** cert. If the team has none (or none you’re allowed to pick), the portal forces creating one. An **Apple Development** cert alone is not enough.
+
+**Create Apple Distribution (once per Mac that holds the private key):**
+
+1. [Certificates](https://developer.apple.com/account/resources/certificates/list) → **+** → **Apple Distribution** → Continue.
+2. Create a CSR on this Mac: **Keychain Access → Keychain Access menu → Certificate Assistant → Request a Certificate From a Certificate Authority** → User Email = your Apple ID, Common Name = anything, **Saved to disk** (leave CA Email empty).
+3. Upload the `.certSigningRequest` → Continue → **Download** the `.cer` → double-click to install into **login** keychain.
+4. Confirm in Keychain → **My Certificates**: `Apple Distribution: …` expands to show a **private key**. If there is no private key, the CSR was made on another machine — redo CSR + cert on *this* Mac.
+
+You may keep an existing Distribution cert if it already appears under My Certificates with a private key. Don’t create extras unless the old one is revoked/expired (limit applies per team).
+
+**Create the Ad Hoc profile:**
+
+1. [Profiles](https://developer.apple.com/account/resources/profiles/list) → **+**.
+2. Distribution → **Ad Hoc** → Continue.
+3. App ID = your app’s bundle id (or the `XC …` / explicit id Xcode already created) → Continue.
+4. Select the **Apple Distribution** certificate from above → Continue.
+5. Check your iPhone → Continue → name it → Generate → Download (optional if using automatic signing later).
+6. On the Mac: **Xcode → Settings → Accounts → [Team] → Download Manual Profiles**, or drop the `.mobileprovision` onto Xcode / `~/Library/MobileDevice/Provisioning Profiles/`.
+
+### 1d. After first install on device
+
+**Settings → General → VPN & Device Management** → trust the developer cert if prompted.
+
+### Common signing failures
+
+| Symptom | Cause / fix |
+|---------|-------------|
+| Portal only offers “create certificate” | No usable **Distribution** cert yet → §1c |
+| Cert installs but won’t sign | `.cer` without private key → CSR must be from this Mac |
+| IPA installs, app won’t open | UDID not in the **current** Ad Hoc profile → add device, regenerate/refresh profile, rebuild |
+| `No signing certificate` / export fail | Sign into Xcode Accounts; set `BSL_TEAM_ID`; ensure Distribution identity in keychain |
+
+## 2. Tailscale (Mac + iPhone)
+
+1. Same tailnet on Mac and iPhone.
+2. Install **CLI** (Tailscale menu → CLI, or `brew install tailscale`). Doctor checks PATH and `Tailscale.app`.
+3. Enable **MagicDNS** + **HTTPS Certificates**: [DNS](https://login.tailscale.com/admin/dns), [Features](https://login.tailscale.com/admin/settings/features).
+4. Hostname → `.env` as `BSL_TS_HOST` (no `https://`):
+
+```bash
+tailscale status --self
+# your-mac.tailnet-xxxx.ts.net
+```
+
+**Do not enable Funnel.** Serve is loopback → Tailscale HTTPS only.
+
+## 3. Config
+
+### `config/repos.yaml`
+
+```yaml
+defaults:
+  favorite: myapp
+repos:
+  - id: myapp
+    repository: you/YourApp
+    display_name: YourApp
+    favorite: true
+    # scheme: YourApp
+    # project_path: .
+```
+
+### `.env` (minimum)
+
+| Variable | Required | Notes |
+|----------|----------|--------|
+| `BSL_TS_HOST` | OTA | MagicDNS hostname |
+| `BSL_API_TOKEN` | **yes** | Bootstrap generates; paste in PWA Status once |
+| `BSL_TEAM_ID` | signing | 10-char Team ID |
+| `GITHUB_TOKEN` | builds | Contents: Read on app repos |
+| `CURSOR_API_KEY` | no | [Cursor API](https://cursor.com/dashboard/api) |
+| `BSL_DEPLOY_ENGINE` | no | `local` (default) or `actions` |
+| `BSL_TOOLING_REPO` | Actions | Your fork, e.g. `you/buildswiftlazily` |
+
+Full list: [`config/env.example`](../config/env.example).
+
+**GitHub token:** fine-grained PAT — Contents Read on apps you build; add Actions Write on this tooling repo only if using the Actions engine.
+
+## 4. Self-hosted Actions runner (optional)
+
+Only for `BSL_DEPLOY_ENGINE=actions` or metal CI.
+
+1. Repo → **Settings → Actions → Runners → New** (macOS) → install as a service.
+2. Labels: `self-hosted`, `macOS`.
+3. Same user must reach `xcodebuild` + signing keychain.
+
+| Secret / var | Purpose |
+|--------------|---------|
+| `IOS_REPOS_READ_TOKEN` | Contents: Read on app repos |
+| `BSL_TS_HOST`, `BSL_TEAM_ID` | OTA + signing |
+| `BSL_ASC_*` | TestFlight from the runner |
+
+`workflow_dispatch` must exist on the **default branch**, or set `BSL_TOOLING_REF`. Local engine ignores this.
+
+## 5. TestFlight (optional)
+
+App Store signing + ASC API (not Ad Hoc).
+
+1. [App Store Connect API keys](https://appstoreconnect.apple.com/access/integrations/api) → generate (App Manager) → download `.p8` once.
+2. `.env`: `BSL_ASC_KEY_ID`, `BSL_ASC_ISSUER_ID`.
+3. `mkdir -p ~/.appstoreconnect/private_keys && mv AuthKey_XXX.p8 ~/.appstoreconnect/private_keys/`
+
+PWA → install method **TestFlight**. Processing often takes a few minutes.
+
+## 6. Doctor
 
 ```bash
 ./scripts/doctor.sh
-./scripts/validate-macos.sh   # deeper dry-run / host checks
+./scripts/validate-macos.sh
 ```
 
-Fix anything red before deploying.
+Fix **fail** rows before deploying.
 
-## 6. Control plane + Serve
-
-Prefer **local** engine — the UI defaults to it and works even if the Actions runner is idle.
+## 7. Run
 
 ```bash
 ./scripts/start.sh
 ```
 
-Or manually:
+Phone (Tailscale on) → `https://$BSL_TS_HOST/` → **Add to Home Screen**.
 
-```bash
-cd apps/control-plane && npm start
-# other terminal:
-./scripts/serve-control.sh
-```
+1. **Status → API token** ← `BSL_API_TOKEN` from `.env`
+2. Repo / branch / scheme → OTA (or TestFlight / Direct) → engine **This Mac (local)**
+3. **Build & Install** → when ready, **Install on this iPhone** (Safari)
 
-Open `https://$BSL_TS_HOST/` on the iPhone (Tailscale connected) → **Share → Add to Home Screen**.
+### Optional launchd
 
-### Install modes in the UI
-
-| Mode | When to use |
-|------|-------------|
-| **OTA (Tailscale)** | Default couch path — Ad Hoc IPA over your private Tailscale HTTPS |
-| **TestFlight** | Anywhere, Apple-hosted — needs ASC API key; slower processing |
-| **Direct** | Phone paired to this Mac |
-| **OTA + Direct** | Both |
-
-## 7. First GuideAI deploy
-
-> **Important:** GitHub only lists `workflow_dispatch` workflows that exist on the repo’s **default branch**. For the **Actions** engine, merge `deploy-ios.yml` to `main` (or set `BSL_TOOLING_REF`). The **local** engine does not need this.
-
-From the PWA:
-
-1. Pick GuideAI + branch + scheme
-2. Install method: OTA or TestFlight
-3. Build where: **This Mac (local)**
-4. Tap **Build & Install** and watch the live log
-5. When ready: tap **Install on this iPhone** (OTA) or open **TestFlight**
-
-## 8. Optional launchd (keep UI online)
-
-Copy `scripts/launchd/com.buildswiftlazily.control.plist.example` to `~/Library/LaunchAgents/`, edit paths, then:
+Copy `scripts/launchd/com.buildswiftlazily.control.plist.example` → `~/Library/LaunchAgents/`, edit paths:
 
 ```bash
 launchctl load ~/Library/LaunchAgents/com.buildswiftlazily.control.plist
@@ -148,11 +187,15 @@ launchctl load ~/Library/LaunchAgents/com.buildswiftlazily.control.plist
 
 | Symptom | Fix |
 |---------|-----|
-| Serve refused | Install Tailscale **CLI** (app menu → CLI), then `./scripts/serve-control.sh` |
-| Install link does nothing | Use **Safari**; confirm Tailscale connected on phone |
-| “Untrusted developer” | VPN & Device Management → Trust |
-| App installs but won't open | UDID missing from Ad Hoc profile → re-register, rebuild |
-| `devicectl` can't find device | Pair over USB/Wi‑Fi; use OTA mode instead |
-| Serve refused | `./scripts/serve-ota.sh --serve-only` and check `tailscale serve status` |
-| Actions engine 404 | `deploy-ios.yml` must exist on `BSL_TOOLING_REF` (or use **This Mac** local engine) |
-| First start fails | `./scripts/bootstrap.sh` then `./scripts/start.sh` |
+| Portal forces a new certificate for Ad Hoc | Need **Apple Distribution** (§1c); Development cert won’t work |
+| `unauthorized` / empty API data | Paste matching `BSL_API_TOKEN` in Status |
+| Serve refused | Tailscale **CLI** + `./scripts/serve-control.sh` |
+| Install link no-op | Safari + Tailscale connected |
+| Untrusted developer | VPN & Device Management → Trust |
+| Installs but won’t launch | UDID missing from active Ad Hoc profile → §1a + refresh profile + rebuild |
+| `devicectl` finds nothing | Pair USB/Wi‑Fi or use OTA |
+| Actions 404 | `deploy-ios.yml` on `BSL_TOOLING_REF`, or use local engine |
+
+## Next
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) · [SECURITY.md](SECURITY.md) · [../README.md](../README.md)

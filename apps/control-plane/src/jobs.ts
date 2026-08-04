@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { redact } from "./security.js";
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed";
 
@@ -59,7 +60,7 @@ export class JobStore {
   appendLog(id: string, line: string): void {
     const job = this.jobs.get(id);
     if (!job) return;
-    job.logs.push(line);
+    job.logs.push(redact(line));
     if (job.logs.length > 400) job.logs.splice(0, job.logs.length - 400);
     job.updatedAt = new Date().toISOString();
   }
@@ -67,7 +68,9 @@ export class JobStore {
   patch(id: string, patch: Partial<DeployJob>): DeployJob | undefined {
     const job = this.jobs.get(id);
     if (!job) return;
-    Object.assign(job, patch, { updatedAt: new Date().toISOString() });
+    const safe = { ...patch };
+    if (typeof safe.error === "string") safe.error = redact(safe.error);
+    Object.assign(job, safe, { updatedAt: new Date().toISOString() });
     return job;
   }
 }

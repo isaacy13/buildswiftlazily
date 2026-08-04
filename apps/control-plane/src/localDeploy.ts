@@ -6,9 +6,15 @@ import { pipeline } from "node:stream/promises";
 import { createWriteStream } from "node:fs";
 import type { Env } from "./config.js";
 import {
+  assertSafeBundleId,
+  assertSafeBundleVersion,
+  assertSafeConfiguration,
+  assertSafeDeployMode,
   assertSafeRef,
   assertSafeRelPath,
   assertSafeRepo,
+  assertSafeScheme,
+  assertSafeTitle,
   REPO_ROOT,
 } from "./config.js";
 import type { JobStore } from "./jobs.js";
@@ -59,8 +65,83 @@ async function downloadGithubTarball(
   await pipeline(res.body as unknown as NodeJS.ReadableStream, createWriteStream(tgz));
   const extractTo = path.join(destDir, "src");
   fs.mkdirSync(extractTo, { recursive: true });
-  await execFileAsync("tar", ["-xzf", tgz, "-C", extractTo, "--strip-components=1"]);
+  await assertSafeTarball(tgz);
+  await execFileAsync("tar", [
+    "-xzf",
+    tgz,
+    "-C",
+    extractTo,
+    "--strip-components=1",
+  ]);
+  assertNoSymlinkEscape(extractTo);
   return extractTo;
+}
+
+/** Reject path-traversal / absolute / link members before extracting a GitHub tarball. */
+async function assertSafeTarball(tgz: string): Promise<void> {
+  const { stdout: names } = await execFileAsync("tar", ["-tzf", tgz], {
+    maxBuffer: 20 * 1024 * 1024,
+    timeout: 60_000,
+  });
+  for (const line of names.split("\n")) {
+    const entry = line.trim();
+    if (!entry) continue;
+    if (entry.startsWith("/") || entry.includes("..")) {
+      throw new Error("Refusing tarball with unsafe path entry");
+    }
+  }
+
+  // Type flags: reject symlink (l) / hardlink (h) members (GNU + BSD tar -tv).
+  const { stdout: listing } = await execFileAsync("tar", ["-tvzf", tgz], {
+    maxBuffer: 20 * 1024 * 1024,
+    timeout: 60_000,
+  });
+  for (const line of listing.split("\n")) {
+    const entry = line.trim();
+    if (!entry) continue;
+    const type = entry[0];
+    if (type === "l" || type === "h") {
+      throw new Error("Refusing tarball with symlink/hardlink entry");
+    }
+    if (entry.includes(" -> ")) {
+      throw new Error("Refusing tarball with symlink/hardlink entry");
+    }
+  }
+}
+
+/** After extract: deny any symlink that resolves outside the checkout root. */
+function assertNoSymlinkEscape(root: string): void {
+  const absRoot = path.resolve(root);
+  const stack = [absRoot];
+  while (stack.length) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isSymbolicLink()) {
+        let target: string;
+        try {
+          target = fs.readlinkSync(full);
+        } catch {
+          throw new Error("Refusing unreadable symlink in checkout");
+        }
+        if (path.isAbsolute(target) || target.split(/[/\\]/).includes("..")) {
+          throw new Error("Refusing symlink escape in checkout");
+        }
+        const resolved = path.resolve(path.dirname(full), target);
+        if (resolved !== absRoot && !resolved.startsWith(absRoot + path.sep)) {
+          throw new Error("Refusing symlink escape in checkout");
+        }
+      } else if (ent.isDirectory()) {
+        stack.push(full);
+      }
+    }
+  }
 }
 
 async function runScript(
@@ -100,10 +181,10 @@ export async function runLocalDeploy(
   const repository = assertSafeRepo(input.repository);
   const ref = assertSafeRef(input.ref);
   const projectPath = assertSafeRelPath(input.project_path || ".");
-  const scheme = input.scheme.trim();
-  const mode = input.deploy_mode || "ota";
-  const configuration = input.configuration || "Release";
-  const title = input.title || scheme;
+  const scheme = assertSafeScheme(input.scheme);
+  const mode = assertSafeDeployMode(input.deploy_mode || "ota");
+  const configuration = assertSafeConfiguration(input.configuration || "Release");
+  const title = assertSafeTitle(input.title || scheme);
 
   jobs.patch(jobId, { status: "running" });
   jobs.appendLog(jobId, `Local deploy ${repository}@${ref} scheme=${scheme} mode=${mode}`);
@@ -189,9 +270,13 @@ export async function runLocalDeploy(
             .readFileSync(appPathFile, "utf8")
             .replace(/^APP_PATH=/, "")
             .trim();
+          const resolved = path.resolve(app);
+          if (!resolved.startsWith(path.resolve(outDir) + path.sep)) {
+            throw new Error("App path escapes build output directory");
+          }
           await runScript(jobId, jobs, path.join(REPO_ROOT, "scripts/install-direct.sh"), [
             "--app",
-            app,
+            resolved,
           ]);
         }
       }
@@ -206,10 +291,14 @@ export async function runLocalDeploy(
       let bid = "com.example.app";
       let bver = "1";
       if (fs.existsSync(path.join(outDir, "bundle_id.txt"))) {
-        bid = fs.readFileSync(path.join(outDir, "bundle_id.txt"), "utf8").trim();
+        bid = assertSafeBundleId(
+          fs.readFileSync(path.join(outDir, "bundle_id.txt"), "utf8"),
+        );
       }
       if (fs.existsSync(path.join(outDir, "bundle_version.txt"))) {
-        bver = fs.readFileSync(path.join(outDir, "bundle_version.txt"), "utf8").trim();
+        bver = assertSafeBundleVersion(
+          fs.readFileSync(path.join(outDir, "bundle_version.txt"), "utf8"),
+        );
       }
       const serveArgs = [
         "--ipa",

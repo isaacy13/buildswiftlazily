@@ -2,9 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { detectIosProjects } from "../src/github.js";
 import {
+  assertSafeAgentId,
+  assertSafeBundleId,
+  assertSafeBundleVersion,
+  assertSafeConfiguration,
+  assertSafeDeployMode,
   assertSafeRef,
   assertSafeRelPath,
   assertSafeRepo,
+  assertSafeScheme,
+  assertSafeTitle,
 } from "../src/config.js";
 import { scoreGuideAiRelevance } from "../src/cursor.js";
 import {
@@ -12,7 +19,7 @@ import {
   buildItmsUrl,
   buildManifestPlist,
 } from "../src/ota.js";
-import { DeployGate, redact } from "../src/security.js";
+import { apiTokenOk, DeployGate, publicError, redact } from "../src/security.js";
 
 test("detectIosProjects finds workspace and skips Pods", () => {
   const paths = [
@@ -43,6 +50,36 @@ test("assertSafeRelPath rejects absolute and ..", () => {
   assert.equal(assertSafeRelPath("ios/App"), "ios/App");
   assert.throws(() => assertSafeRelPath("../secret"));
   assert.throws(() => assertSafeRelPath("/etc"));
+});
+
+test("assertSafeScheme / configuration / title / mode", () => {
+  assert.equal(assertSafeScheme("GuideAI"), "GuideAI");
+  assert.throws(() => assertSafeScheme("x;y"));
+  assert.equal(assertSafeConfiguration("Release"), "Release");
+  assert.throws(() => assertSafeConfiguration("Release`id`"));
+  assert.equal(assertSafeTitle("My App"), "My App");
+  assert.throws(() => assertSafeTitle('bad"title'));
+  assert.throws(() => assertSafeTitle("bad\ntitle"));
+  assert.equal(assertSafeDeployMode("ota"), "ota");
+  assert.throws(() => assertSafeDeployMode("wipe"));
+  assert.equal(assertSafeAgentId("bc_abc-123"), "bc_abc-123");
+  assert.throws(() => assertSafeAgentId("../x"));
+  assert.equal(assertSafeBundleId("com.example.GuideAI"), "com.example.GuideAI");
+  assert.throws(() => assertSafeBundleId("com;rm"));
+  assert.equal(assertSafeBundleVersion("1.2.3"), "1.2.3");
+  assert.throws(() => assertSafeBundleVersion("1\n2"));
+});
+
+test("apiTokenOk uses constant-time compare", () => {
+  assert.equal(apiTokenOk("", null), true);
+  assert.equal(apiTokenOk("secret-token-value", null), false);
+  assert.equal(apiTokenOk("secret-token-value", "secret-token-value"), true);
+  assert.equal(apiTokenOk("secret-token-value", "other-token-value"), false);
+});
+
+test("publicError redacts and avoids dumping objects", () => {
+  assert.match(publicError(new Error("boom ghp_abcdefghijklmnopqrstuvwxyz12")), /REDACTED/);
+  assert.equal(publicError({ nope: true }), "request failed");
 });
 
 test("scoreGuideAiRelevance prefers GuideAI agents", () => {
@@ -99,6 +136,7 @@ test("redact strips tokens", () => {
     redact("x supersecretvalue12 y", ["supersecretvalue12"]),
     "x [REDACTED] y",
   );
+  assert.match(redact("Basic YWJjZGVmZ2hpams="), /REDACTED/);
 });
 
 test("DeployGate enforces single flight and cooldown", () => {

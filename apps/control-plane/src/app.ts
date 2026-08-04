@@ -3,10 +3,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
-import { cors } from "hono/cors";
 import {
-  assertSafeRepo,
+  assertSafeAgentId,
+  assertSafeConfiguration,
+  assertSafeDeployMode,
   assertSafeRef,
+  assertSafeRelPath,
+  assertSafeRepo,
+  assertSafeScheme,
+  assertSafeTitle,
   type AppConfig,
   type Env,
 } from "./config.js";
@@ -25,7 +30,14 @@ import {
   scoreGuideAiRelevance,
 } from "./cursor.js";
 import { healthPayload, listDevices, listOtaArtifacts } from "./local.js";
-import { DeployGate, logError, logInfo } from "./security.js";
+import {
+  apiTokenOk,
+  DeployGate,
+  extractApiToken,
+  logError,
+  logInfo,
+  publicError,
+} from "./security.js";
 import { JobStore } from "./jobs.js";
 import { runLocalDeploy } from "./localDeploy.js";
 import { buildSetupChecklist } from "./setup.js";
@@ -38,13 +50,43 @@ export type AppDeps = {
   jobs?: JobStore;
 };
 
+const PUBLIC_API = new Set(["/api/health"]);
+
 export function createApp(deps: AppDeps) {
   const { env, repoConfig } = deps;
   const jobs = deps.jobs || new JobStore();
   const deployGate = new DeployGate(8_000);
   const app = new Hono();
 
-  app.use("/api/*", cors());
+  // Same-origin PWA — do not enable open CORS (would allow cross-site deploy CSRF
+  // from any page the operator visits while on Tailscale).
+
+  app.use("/api/*", async (c, next) => {
+    const pathOnly = c.req.path.split("?")[0];
+    if (PUBLIC_API.has(pathOnly)) {
+      await next();
+      return;
+    }
+    if (!env.apiToken) {
+      if (env.allowInsecureApi) {
+        await next();
+        return;
+      }
+      return c.json(
+        {
+          error:
+            "API locked — set BSL_API_TOKEN in .env (or BSL_ALLOW_INSECURE_API=1 for local smoke only)",
+        },
+        401,
+      );
+    }
+    const provided = extractApiToken((n) => c.req.header(n));
+    if (!apiTokenOk(env.apiToken, provided)) {
+      return c.json({ error: "unauthorized" }, 401);
+    }
+    await next();
+  });
+
   app.onError((err, c) => {
     logError(`request error: ${err}`);
     return c.json({ error: "internal error" }, 500);
@@ -55,6 +97,7 @@ export function createApp(deps: AppDeps) {
       ...healthPayload(env),
       deployEngine: env.deployEngine,
       platform: process.platform,
+      apiAuthRequired: Boolean(env.apiToken) || !env.allowInsecureApi,
     }),
   );
 
@@ -75,6 +118,7 @@ export function createApp(deps: AppDeps) {
       deployEngine: env.deployEngine,
       modes: ["ota", "direct", "both", "testflight"],
       engines: ["local", "actions"],
+      apiAuthRequired: Boolean(env.apiToken) || !env.allowInsecureApi,
     }),
   );
 
@@ -127,7 +171,8 @@ export function createApp(deps: AppDeps) {
           : "GITHUB_TOKEN not set — showing pinned repos only. Add a token in .env.",
       });
     } catch (e) {
-      return c.json({ error: String(e) }, 500);
+      logError(`repos list failed: ${e}`);
+      return c.json({ error: publicError(e) }, 500);
     }
   });
 
@@ -145,7 +190,7 @@ export function createApp(deps: AppDeps) {
       const branches = await listBranches(env, repository);
       return c.json({ branches });
     } catch (e) {
-      return c.json({ error: String(e) }, 400);
+      return c.json({ error: publicError(e) }, 400);
     }
   });
 
@@ -173,7 +218,7 @@ export function createApp(deps: AppDeps) {
         suggestedPath: pinned?.project_path || projects[0]?.projectPath || ".",
       });
     } catch (e) {
-      return c.json({ error: String(e) }, 400);
+      return c.json({ error: publicError(e) }, 400);
     }
   });
 
@@ -185,33 +230,45 @@ export function createApp(deps: AppDeps) {
         429,
       );
     }
+    let holdGate = false;
     try {
       const body = await c.req.json();
+      const repository = assertSafeRepo(String(body.repository || ""));
+      const ref = assertSafeRef(String(body.ref || ""));
+      const scheme = assertSafeScheme(String(body.scheme || ""));
+      const project_path = assertSafeRelPath(String(body.project_path || "."));
+      const configuration = assertSafeConfiguration(
+        String(body.configuration || repoConfig.defaults.configuration || "Release"),
+      );
+      const deployMode = assertSafeDeployMode(
+        String(body.deploy_mode || repoConfig.defaults.deploy_mode || "ota"),
+      );
+      const title = assertSafeTitle(String(body.title || scheme));
       const engine =
         body.engine === "actions" || body.engine === "local"
           ? body.engine
           : env.deployEngine;
-      const deployMode = body.deploy_mode || repoConfig.defaults.deploy_mode || "ota";
+
       logInfo(
-        `deploy engine=${engine} repo=${body.repository} ref=${body.ref} scheme=${body.scheme} mode=${deployMode}`,
+        `deploy engine=${engine} repo=${repository} ref=${ref} scheme=${scheme} mode=${deployMode}`,
       );
 
       if (engine === "actions") {
         const result = await dispatchDeploy(env, {
-          repository: body.repository,
-          ref: body.ref,
-          project_path: body.project_path,
-          scheme: body.scheme,
-          configuration: body.configuration || repoConfig.defaults.configuration,
+          repository,
+          ref,
+          project_path,
+          scheme,
+          configuration,
           deploy_mode: deployMode === "testflight" ? "testflight" : deployMode,
-          title: body.title,
+          title,
         });
         const job = jobs.create({
           engine: "actions",
           status: "succeeded",
-          repository: body.repository,
-          ref: body.ref,
-          scheme: body.scheme,
+          repository,
+          ref,
+          scheme,
           deployMode,
           actionsRunUrl: `https://github.com/${env.toolingRepo}/actions`,
         });
@@ -227,21 +284,22 @@ export function createApp(deps: AppDeps) {
       const job = jobs.create({
         engine: "local",
         status: "queued",
-        repository: body.repository,
-        ref: body.ref,
-        scheme: body.scheme,
+        repository,
+        ref,
+        scheme,
         deployMode,
       });
-      // Fire and forget
+      // Hold the gate until the async local job finishes (single-flight).
+      holdGate = true;
       void runLocalDeploy(env, jobs, job.id, {
-        repository: body.repository,
-        ref: body.ref,
-        project_path: body.project_path,
-        scheme: body.scheme,
-        configuration: body.configuration || repoConfig.defaults.configuration,
+        repository,
+        ref,
+        project_path,
+        scheme,
+        configuration,
         deploy_mode: deployMode,
-        title: body.title,
-      });
+        title,
+      }).finally(() => deployGate.release());
       return c.json({
         engine: "local",
         jobId: job.id,
@@ -249,9 +307,9 @@ export function createApp(deps: AppDeps) {
       });
     } catch (e) {
       logError(`deploy failed: ${e}`);
-      return c.json({ error: String(e) }, 400);
+      return c.json({ error: publicError(e) }, 400);
     } finally {
-      deployGate.release();
+      if (!holdGate) deployGate.release();
     }
   });
 
@@ -268,16 +326,21 @@ export function createApp(deps: AppDeps) {
       const runs = await listRecentWorkflowRuns(env);
       return c.json({ runs });
     } catch (e) {
-      return c.json({ error: String(e), runs: [] }, 500);
+      logError(`deploys list failed: ${e}`);
+      return c.json({ error: publicError(e), runs: [] }, 500);
     }
   });
 
   app.get("/api/deploys/:id", async (c) => {
     try {
-      const run = await getWorkflowRun(env, Number(c.req.param("id")));
+      const id = Number(c.req.param("id"));
+      if (!Number.isInteger(id) || id <= 0) {
+        return c.json({ error: "Invalid run id" }, 400);
+      }
+      const run = await getWorkflowRun(env, id);
       return c.json(run);
     } catch (e) {
-      return c.json({ error: String(e) }, 400);
+      return c.json({ error: publicError(e) }, 400);
     }
   });
 
@@ -304,18 +367,23 @@ export function createApp(deps: AppDeps) {
           if (b.relevance !== a.relevance) return b.relevance - a.relevance;
           return String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
         });
-      return c.json({ agents: ranked });
+      // Strip bulky raw payloads from list view
+      return c.json({
+        agents: ranked.map(({ raw: _raw, ...rest }) => rest),
+      });
     } catch (e) {
-      return c.json({ error: String(e), agents: [] }, 500);
+      logError(`cursor agents failed: ${e}`);
+      return c.json({ error: publicError(e), agents: [] }, 500);
     }
   });
 
   app.get("/api/cursor/agents/:id", async (c) => {
     try {
-      const detail = await getCursorAgentDetail(env, c.req.param("id"));
+      const id = assertSafeAgentId(c.req.param("id"));
+      const detail = await getCursorAgentDetail(env, id);
       return c.json(detail);
     } catch (e) {
-      return c.json({ error: String(e) }, 400);
+      return c.json({ error: publicError(e) }, 400);
     }
   });
 

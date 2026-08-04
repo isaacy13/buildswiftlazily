@@ -41,6 +41,13 @@ export type Env = {
   toolingRef: string;
   /** Prefer local builds on the Mac (works when Actions runner is down). */
   deployEngine: "local" | "actions";
+  /**
+   * Shared secret for control-plane API (defense in depth beyond Tailscale).
+   * Required unless allowInsecureApi is true.
+   */
+  apiToken: string;
+  /** Explicit opt-out of API token requirement (dev / smoke only). */
+  allowInsecureApi: boolean;
 };
 
 function loadDotEnv(file: string) {
@@ -91,6 +98,8 @@ export function loadEnv(): Env {
     toolingRef: process.env.BSL_TOOLING_REF || "main",
     deployEngine:
       process.env.BSL_DEPLOY_ENGINE === "actions" ? "actions" : "local",
+    apiToken: process.env.BSL_API_TOKEN || "",
+    allowInsecureApi: process.env.BSL_ALLOW_INSECURE_API === "1",
   };
 }
 
@@ -115,7 +124,13 @@ export function loadRepoConfig(): AppConfig {
 }
 
 export function assertSafeRef(ref: string): string {
-  if (!ref || ref.includes("..") || /[\n\r;|$`\\]/.test(ref)) {
+  if (
+    !ref ||
+    ref.length > 256 ||
+    ref.includes("..") ||
+    /[\n\r;|$`\\&<>(){}[\]!]/.test(ref) ||
+    !/^[A-Za-z0-9._/\-]+$/.test(ref)
+  ) {
     throw new Error("Invalid git ref");
   }
   return ref;
@@ -130,8 +145,72 @@ export function assertSafeRepo(repo: string): string {
 
 export function assertSafeRelPath(p: string): string {
   const normalized = p.replace(/\\/g, "/") || ".";
-  if (normalized.startsWith("/") || normalized.includes("..")) {
+  if (
+    normalized.startsWith("/") ||
+    normalized.includes("..") ||
+    /[\n\r;|$`\\]/.test(normalized)
+  ) {
     throw new Error("Invalid project path");
   }
   return normalized;
+}
+
+/** Xcode scheme names — keep shell/metacharacter-safe. */
+export function assertSafeScheme(scheme: string): string {
+  const s = scheme.trim();
+  if (!s || s.length > 128 || !/^[A-Za-z0-9._+\- ]+$/.test(s)) {
+    throw new Error("Invalid scheme");
+  }
+  return s;
+}
+
+export function assertSafeConfiguration(configuration: string): string {
+  const c = configuration.trim();
+  if (!c || c.length > 64 || !/^[A-Za-z0-9._+\-]+$/.test(c)) {
+    throw new Error("Invalid configuration");
+  }
+  return c;
+}
+
+export function assertSafeTitle(title: string): string {
+  const t = title.trim();
+  if (!t) return "App";
+  // Align with scheme: shell- and XML-safe display names only.
+  if (t.length > 128 || !/^[A-Za-z0-9._+\- ]+$/.test(t)) {
+    throw new Error("Invalid title");
+  }
+  return t;
+}
+
+/** Reverse-DNS style bundle id from IPA metadata. */
+export function assertSafeBundleId(id: string): string {
+  const s = id.trim();
+  if (!s || s.length > 210 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(s)) {
+    throw new Error("Invalid bundle id");
+  }
+  return s;
+}
+
+export function assertSafeBundleVersion(ver: string): string {
+  const s = ver.trim();
+  if (!s || s.length > 64 || !/^[A-Za-z0-9._+-]+$/.test(s)) {
+    throw new Error("Invalid bundle version");
+  }
+  return s;
+}
+
+export function assertSafeDeployMode(
+  mode: string,
+): "ota" | "direct" | "both" | "testflight" {
+  if (mode === "ota" || mode === "direct" || mode === "both" || mode === "testflight") {
+    return mode;
+  }
+  throw new Error("Invalid deploy_mode");
+}
+
+export function assertSafeAgentId(id: string): string {
+  if (!id || id.length > 128 || !/^[A-Za-z0-9_-]+$/.test(id)) {
+    throw new Error("Invalid agent id");
+  }
+  return id;
 }

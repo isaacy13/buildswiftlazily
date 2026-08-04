@@ -1,44 +1,136 @@
 # buildswiftlazily
 
-Build iOS apps from the couch. Open this on your **iPhone** or **MacBook**, pick a branch (GuideAI-first), peek at recent **Cursor Cloud Agent** prompts, tap **Build & Install**.
+Build and install your own iOS apps from the couch.
 
-Works **even when the GitHub Actions runner is down** — by default builds run **locally on your Mac** (where the control plane lives). Optional: dispatch to self-hosted Actions. Install via **Tailscale OTA**, **paired device**, or **TestFlight**.
+Open a small PWA on your **iPhone** (or Mac), pick a repo/branch, optionally peek at recent **Cursor Cloud Agent** threads, tap **Build & Install**. The IPA lands on your phone over **Tailscale OTA**, a **paired device**, or **TestFlight**.
 
-## 30-second mental model
+Default path: builds run **locally on your Mac** (no Actions runner required). You can optionally dispatch to a self-hosted GitHub Actions Mac runner.
 
-| Want | Choose |
+> Personal, single-operator tooling. Not multi-tenant SaaS. Network trust is **your Tailscale tailnet** plus an API token — see [docs/SECURITY.md](docs/SECURITY.md).
+
+## Why this exists
+
+Shipping a personal iOS build usually means: open Xcode, wait, remember signing, AirDrop or cable the phone, or wait on TestFlight. This repo is a thin control plane + scripts so you can do the same loop from the couch while Tailscale keeps IPAs off the public internet.
+
+## Requirements
+
+| Need | Notes |
 |------|--------|
-| Instant couch install (off home Wi‑Fi) | **OTA** + Tailscale on phone |
-| Install anywhere via Apple | **TestFlight** |
-| USB/Wi‑Fi paired to Mac | **Direct** |
-| Actions runner offline | Engine = **This Mac (local)** |
+| **Mac** with Xcode | Control plane and `xcodebuild` live here |
+| **Apple Developer** account | Ad Hoc (OTA/direct) and/or App Store Connect (TestFlight) |
+| **Tailscale** on Mac + iPhone | Same tailnet; MagicDNS + HTTPS certs for Serve |
+| **Node.js 22+** | Control plane |
+| **GitHub token** | Read source (and Actions write if you use the Actions engine) |
+| Optional: **Cursor API key** | Cloud Agent prompts in the PWA |
+| Optional: **self-hosted Actions runner** | Only if you choose the Actions engine |
 
-## Quick start (Mac)
+## How it fits together
 
-```bash
-./scripts/bootstrap.sh
-# edit .env + config/repos.yaml (GuideAI slug, GITHUB_TOKEN, BSL_TEAM_ID;
-# for TestFlight: BSL_ASC_* + AuthKey_*.p8)
-
-./scripts/start.sh
+```text
+ iPhone (Tailscale)                    Mac (your machine)
+ ┌──────────────────┐                  ┌─────────────────────────────┐
+ │ PWA  https://…   │  Tailscale Serve │  control plane :8787        │
+ │ Build & Install  │ ───────────────► │  local xcodebuild  or       │
+ │ Install link     │ ◄─── IPA/OTA ─── │  workflow_dispatch → runner │
+ └──────────────────┘                  └─────────────────────────────┘
 ```
 
-Phone: Tailscale on → `https://$BSL_TS_HOST/` → Add to Home Screen → **Build**.
+| Piece | Role |
+|-------|------|
+| **Control plane** (`apps/control-plane`) | Hono API + mobile PWA; binds `127.0.0.1` only |
+| **Scripts** (`scripts/`) | `build-ios`, OTA serve, TestFlight upload, doctor, bootstrap |
+| **Config** | `.env` (secrets) + `config/repos.yaml` (pinned apps) — both gitignored after copy |
+| **Workflow** (optional) | `.github/workflows/deploy-ios.yml` on a self-hosted `macOS` runner |
 
-Full checklist: **[docs/SETUP.md](docs/SETUP.md)** (includes UDID + TestFlight API key).
-
-## Tests
+## Quick start
 
 ```bash
-# Linux + Mac
-cd apps/control-plane && npm test && npm run build
+git clone https://github.com/isaacy13/buildswiftlazily.git
+cd buildswiftlazily
+./scripts/bootstrap.sh
+```
+
+Bootstrap copies templates, generates `BSL_API_TOKEN`, tries to fill `BSL_TS_HOST` from Tailscale, and builds the control plane.
+
+Then edit:
+
+1. **`config/repos.yaml`** — set your app’s `owner/repo` (examples use a favorite called GuideAI; replace with yours)
+2. **`.env`** — `BSL_TEAM_ID`, `GITHUB_TOKEN`, Cursor key if you want it; confirm `BSL_TS_HOST` and `BSL_API_TOKEN`
+
+```bash
+./scripts/doctor.sh          # fix anything red
+./scripts/start.sh           # API + Tailscale Serve
+```
+
+On the phone (Tailscale connected):
+
+1. Open `https://$BSL_TS_HOST/`
+2. **Share → Add to Home Screen**
+3. Status → paste **API token** from `.env` (`BSL_API_TOKEN`) once
+4. Pick repo / branch / scheme → **Build & Install**
+
+Full checklist (Apple Distribution vs Ad Hoc, UDID, TestFlight, runner): **[docs/SETUP.md](docs/SETUP.md)**.
+
+## Install modes
+
+| Want | Choose in the PWA |
+|------|-------------------|
+| Instant install off home Wi‑Fi | **OTA** + Tailscale on the phone |
+| Install anywhere via Apple | **TestFlight** (ASC API key + `.p8`) |
+| USB / Wi‑Fi paired to this Mac | **Direct** (`devicectl`) |
+| Actions runner offline / idle | Engine = **This Mac (local)** (default) |
+
+## Configuration cheatsheet
+
+| Variable / file | Purpose |
+|-----------------|--------|
+| `BSL_TS_HOST` | MagicDNS name of the Mac (no `https://`) |
+| `BSL_API_TOKEN` | Required API auth; bootstrap generates one |
+| `BSL_TEAM_ID` | 10-char Apple Team ID for signing |
+| `GITHUB_TOKEN` | Contents read (+ Actions write if dispatching) |
+| `BSL_DEPLOY_ENGINE` | `local` (default) or `actions` |
+| `BSL_TOOLING_REPO` / `BSL_TOOLING_REF` | Where `deploy-ios.yml` lives (Actions engine only) |
+| `config/repos.yaml` | Pinned apps, schemes, favorites |
+
+See `config/env.example` for the full list.
+
+## Security (short version)
+
+- Control plane listens on **loopback**; expose it only with **`tailscale serve`** (never Funnel).
+- **`BSL_API_TOKEN` is required** unless you explicitly set `BSL_ALLOW_INSECURE_API=1` (smoke/dev only).
+- Ad Hoc installs are limited to registered **UDIDs**.
+- Secrets stay in `.env` / Keychain / Actions secrets — not in the browser bundle.
+
+Details and threat model: **[docs/SECURITY.md](docs/SECURITY.md)**.
+
+## Forking
+
+If you fork this for your own Mac:
+
+1. Change `BSL_TOOLING_REPO` to `youruser/buildswiftlazily` (or disable the Actions engine and stay on `local`).
+2. Rotate every token and regenerate signing material — do not reuse anything from someone else’s machine.
+3. Replace example repo slugs in `config/repos.yaml`.
+
+## Development & tests
+
+```bash
+cd apps/control-plane && npm ci && npm test && npm run build
+# from repo root:
 ./scripts/smoke-api.sh
 ./scripts/test-scripts.sh
 ./scripts/validate-macos.sh
-
-# Self-hosted Mac runner also runs workflow: macOS validate
 ```
 
-## Security
+Control plane notes: [apps/control-plane/README.md](apps/control-plane/README.md).
 
-Tailscale-only UI/IPAs. Secrets stay on the Mac. See **[docs/SECURITY.md](docs/SECURITY.md)**.
+## Docs
+
+| Doc | Contents |
+|-----|----------|
+| [docs/SETUP.md](docs/SETUP.md) | End-to-end Mac + phone setup |
+| [docs/SECURITY.md](docs/SECURITY.md) | Trust boundaries, secrets, reporting |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components and data flow |
+
+## License
+
+[MIT](LICENSE) — © Isaac Yeang.

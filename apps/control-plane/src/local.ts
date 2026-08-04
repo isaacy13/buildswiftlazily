@@ -69,7 +69,8 @@ export function healthPayload(env: Env) {
     teamIdConfigured: Boolean(env.teamId),
     githubConfigured: Boolean(env.githubToken),
     cursorConfigured: Boolean(env.cursorApiKey),
-    artifactRoot: env.artifactRoot,
+    // Do not expose absolute local paths on the unauthenticated health endpoint.
+    artifactRootConfigured: Boolean(env.artifactRoot),
     time: new Date().toISOString(),
   };
 }

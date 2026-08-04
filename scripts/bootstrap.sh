@@ -13,7 +13,7 @@ echo "== buildswiftlazily bootstrap =="
 
 if [[ ! -f config/repos.yaml ]]; then
   cp config/repos.example.yaml config/repos.yaml
-  echo "Created config/repos.yaml — set the real GuideAI owner/repo slug."
+  echo "Created config/repos.yaml — set your app owner/repo slug."
 else
   echo "config/repos.yaml already present"
 fi
@@ -24,6 +24,33 @@ if [[ ! -f .env ]]; then
   echo "Created .env from config/env.example (chmod 600)."
 else
   echo ".env already present"
+fi
+
+# Ensure BSL_API_TOKEN exists (fail-closed API auth)
+if ! grep -q '^BSL_API_TOKEN=.\+' .env 2>/dev/null; then
+  TOKEN="$(openssl rand -hex 24 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(24))')"
+  if [[ "$DRY" == "1" ]]; then
+    echo "DRY: would set BSL_API_TOKEN=<generated>"
+  else
+    python3 - "$TOKEN" <<'PY'
+import pathlib, sys
+token = sys.argv[1]
+p = pathlib.Path(".env")
+text = p.read_text() if p.exists() else ""
+lines = []
+replaced = False
+for line in text.splitlines():
+    if line.startswith("BSL_API_TOKEN="):
+        lines.append(f"BSL_API_TOKEN={token}")
+        replaced = True
+    else:
+        lines.append(line)
+if not replaced:
+    lines.append(f"BSL_API_TOKEN={token}")
+p.write_text("\n".join(lines) + "\n")
+print("Generated BSL_API_TOKEN in .env — paste into Status → API token on your phone")
+PY
+  fi
 fi
 
 # Auto-fill Tailscale MagicDNS host when possible
@@ -143,9 +170,9 @@ cd "$ROOT"
 
 echo
 echo "== bootstrap complete =="
-echo "1. Edit .env — GITHUB_TOKEN, BSL_TEAM_ID, BSL_TS_HOST (if unset), optional ASC + CURSOR keys"
-echo "2. Edit config/repos.yaml — real GuideAI slug"
+echo "1. Edit .env — GITHUB_TOKEN, BSL_TEAM_ID, BSL_TS_HOST (if unset); confirm BSL_API_TOKEN"
+echo "2. Edit config/repos.yaml — your app owner/repo slug"
 echo "3. Start:  ./scripts/start.sh"
-echo "4. Phone (Tailscale on): https://\$BSL_TS_HOST/  → Add to Home Screen → Build"
+echo "4. Phone (Tailscale on): https://\$BSL_TS_HOST/ → Add to Home Screen → paste API token in Status → Build"
 echo
 echo "Default engine is local (this Mac). Actions runner is optional."
