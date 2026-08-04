@@ -144,6 +144,13 @@ export_ipa() {
     echo "IPA_PATH=$OUT_DIR/App.ipa"
     return 0
   fi
+  # Empty teamID in ExportOptions breaks first-run exports — omit until set.
+  if [[ -n "$TEAM_ID" ]]; then
+    TEAM_XML=$'\n  <key>teamID</key>\n  <string>'"${TEAM_ID}"$'</string>'
+  else
+    TEAM_XML=""
+    echo "Warning: BSL_TEAM_ID unset — relying on Xcode automatic signing defaults" >&2
+  fi
   cat > "$EXPORT_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -152,9 +159,7 @@ export_ipa() {
   <key>method</key>
   <string>${method}</string>
   <key>signingStyle</key>
-  <string>automatic</string>
-  <key>teamID</key>
-  <string>${TEAM_ID}</string>
+  <string>automatic</string>${TEAM_XML}
   <key>compileBitcode</key>
   <false/>
   <key>stripSwiftSymbols</key>

@@ -55,12 +55,13 @@ tailscale status --self
 
 For a personal Mac, keeping certs in the login keychain is simplest. Prefer temp-keychain import + cleanup if the machine is shared.
 
-## 4. Config files
+## 4. First-run bootstrap
 
 ```bash
-cp config/repos.example.yaml config/repos.yaml
-cp config/env.example .env
+./scripts/bootstrap.sh
 ```
+
+This copies `config/env.example` → `.env` and `repos.example.yaml` → `repos.yaml`, tries to fill `BSL_TS_HOST` from Tailscale, points `BSL_TOOLING_REF` at your current branch if `deploy-ios.yml` is not on `main` yet, runs doctor, and builds the control plane.
 
 Edit `config/repos.yaml`:
 
@@ -88,24 +89,24 @@ In the PWA, choose **TestFlight** as the install method. After upload, open the 
 
 ```bash
 ./scripts/doctor.sh
+./scripts/validate-macos.sh   # deeper dry-run / host checks
 ```
 
 Fix anything red before deploying.
 
 ## 6. Control plane + Serve
 
-Prefer **local** engine while the Actions runner is down — the UI defaults to it.
+Prefer **local** engine — the UI defaults to it and works even if the Actions runner is idle.
 
 ```bash
-cd apps/control-plane
-npm install
-npm run build
-npm start
+./scripts/start.sh
 ```
 
-In another terminal:
+Or manually:
 
 ```bash
+cd apps/control-plane && npm start
+# other terminal:
 ./scripts/serve-control.sh
 ```
 
@@ -149,3 +150,5 @@ launchctl load ~/Library/LaunchAgents/com.buildswiftlazily.control.plist
 | App installs but won't open | UDID missing from Ad Hoc profile → re-register, rebuild |
 | `devicectl` can't find device | Pair over USB/Wi‑Fi; use OTA mode instead |
 | Serve refused | `./scripts/serve-ota.sh --serve-only` and check `tailscale serve status` |
+| Actions engine 404 | `deploy-ios.yml` must exist on `BSL_TOOLING_REF` (or use **This Mac** local engine) |
+| First start fails | `./scripts/bootstrap.sh` then `./scripts/start.sh` |

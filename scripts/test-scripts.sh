@@ -21,4 +21,12 @@ echo "$out3" | grep -q TESTFLIGHT_UPLOAD
 out4=$(BSL_DRY_RUN=1 "$ROOT/scripts/serve-ota.sh" --ipa "$OUT/App.ipa" --artifact-id scripttest1 --title Demo --bundle-id com.demo --ts-host x.ts.net --dry-run)
 echo "$out4" | grep -q INSTALL_URL
 
+mkdir -p "$TMP/Demo.app"
+printf '%s\n' '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.demo</string></dict></plist>' > "$TMP/Demo.app/Info.plist"
+out5=$(BSL_DRY_RUN=1 "$ROOT/scripts/install-direct.sh" --app "$TMP/Demo.app" --device test-device --dry-run)
+echo "$out5" | grep -q 'devicectl device install'
+
+# Deeper contract checks (path safety, manifest XML, TEAM_ID guard, etc.)
+"$ROOT/scripts/validate-macos.sh" >/dev/null
+
 echo "test-scripts ok"

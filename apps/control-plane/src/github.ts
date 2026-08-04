@@ -194,7 +194,15 @@ export async function dispatchDeploy(
     },
   );
   if (res.status !== 204) {
-    throw new Error(`workflow_dispatch failed: ${res.status} ${await res.text()}`);
+    const detail = await res.text();
+    if (res.status === 404) {
+      throw new Error(
+        `workflow_dispatch failed: deploy-ios.yml not found on ref "${env.toolingRef}". ` +
+          `Keep Build where = This Mac (local), or set BSL_TOOLING_REF to the branch that has the workflow ` +
+          `(e.g. cursor/self-hosted-ios-deployment-706f) until it is merged to main. ${detail}`,
+      );
+    }
+    throw new Error(`workflow_dispatch failed: ${res.status} ${detail}`);
   }
   return { message: "Dispatched deploy-ios.yml" };
 }

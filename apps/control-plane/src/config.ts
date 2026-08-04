@@ -21,7 +21,7 @@ export type AppConfig = {
   discovery: { mode: "personal"; max_repos: number; scan_depth: number };
   defaults: {
     favorite: string;
-    deploy_mode: "ota" | "direct" | "both";
+    deploy_mode: "ota" | "direct" | "both" | "testflight";
     configuration: string;
   };
   repos: RepoConfigEntry[];

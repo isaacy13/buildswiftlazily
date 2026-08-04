@@ -86,12 +86,12 @@ if [[ -f "$ROOT/config/repos.yaml" ]]; then
 else
   note "config/repos.yaml missing — copy config/repos.example.yaml"
 fi
-if [[ -n "${BSL_TS_HOST:-}" ]]; then
+if [[ -n "${BSL_TS_HOST:-}" && "$BSL_TS_HOST" != "your-mac.tailnet-xxxx.ts.net" ]]; then
   pass "BSL_TS_HOST=$BSL_TS_HOST"
 else
-  note "BSL_TS_HOST unset"
+  note "BSL_TS_HOST unset or still placeholder"
 fi
-if [[ -n "${BSL_TEAM_ID:-}" ]]; then
+if [[ -n "${BSL_TEAM_ID:-}" && "$BSL_TEAM_ID" != "XXXXXXXXXX" ]]; then
   pass "BSL_TEAM_ID set"
 else
   note "BSL_TEAM_ID unset (needed for signing)"
@@ -106,6 +106,40 @@ if [[ -n "${GITHUB_TOKEN:-}${GH_TOKEN:-}" ]]; then
 else
   note "No GITHUB_TOKEN — relying on gh auth if available"
 fi
+if [[ -n "${BSL_GUIDEAI_REPO:-}" && "$BSL_GUIDEAI_REPO" != "YOUR_ORG_OR_USER/GuideAI" ]]; then
+  pass "BSL_GUIDEAI_REPO=$BSL_GUIDEAI_REPO"
+else
+  # Also check repos.yaml placeholder
+  if [[ -f "$ROOT/config/repos.yaml" ]] && grep -q 'YOUR_ORG_OR_USER/GuideAI' "$ROOT/config/repos.yaml" 2>/dev/null; then
+    note "GuideAI slug still placeholder in config/repos.yaml"
+  fi
+fi
+
+echo
+echo "[signing]"
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  if security find-identity -v -p codesigning 2>/dev/null | grep -Eq 'Apple Development|Apple Distribution|iPhone'; then
+    pass "Apple codesigning identity present"
+  else
+    note "No Apple Development/Distribution identity — open Xcode → Settings → Accounts and sign in"
+  fi
+else
+  note "Skipping signing probe (not Darwin)"
+fi
+if [[ -n "${BSL_ASC_KEY_ID:-}${ASC_KEY_ID:-}" && -n "${BSL_ASC_ISSUER_ID:-}${ASC_ISSUER_ID:-}" ]]; then
+  KEY_ID="${BSL_ASC_KEY_ID:-${ASC_KEY_ID:-}}"
+  KEY_DIR="${BSL_ASC_KEY_PATH:-${API_PRIVATE_KEYS_DIR:-$HOME/.appstoreconnect/private_keys}}"
+  KEY_DIR="${KEY_DIR/#\~/$HOME}"
+  if [[ -f "$KEY_DIR" ]]; then
+    pass "ASC API key file configured"
+  elif [[ -f "$KEY_DIR/AuthKey_${KEY_ID}.p8" ]]; then
+    pass "ASC AuthKey_${KEY_ID}.p8 present"
+  else
+    note "ASC key IDs set but AuthKey_${KEY_ID}.p8 not found under $KEY_DIR"
+  fi
+else
+  note "TestFlight ASC API key not configured (optional)"
+fi
 
 echo
 echo "[artifacts]"
@@ -116,6 +150,20 @@ if [[ -d "$ART" ]]; then
   pass "artifact root: $ART"
 else
   bad "cannot create artifact root: $ART"
+fi
+
+echo
+echo "[workflow]"
+if [[ -f "$ROOT/.github/workflows/deploy-ios.yml" ]]; then
+  pass "deploy-ios.yml present in this checkout"
+  TOOLING_REF="${BSL_TOOLING_REF:-main}"
+  if [[ "$TOOLING_REF" == "main" ]]; then
+    note "BSL_TOOLING_REF=main — Actions engine needs deploy-ios.yml on default branch (or set BSL_TOOLING_REF to this branch). Local engine is fine."
+  else
+    pass "BSL_TOOLING_REF=$TOOLING_REF"
+  fi
+else
+  note "deploy-ios.yml missing from checkout"
 fi
 
 echo
@@ -130,6 +178,11 @@ if command -v xcrun >/dev/null 2>&1 && xcrun devicectl list devices >/dev/null 2
 else
   note "Skipping device list"
 fi
+
+echo
+echo "[first-run tip]"
+echo "  ./scripts/bootstrap.sh   # once"
+echo "  ./scripts/start.sh       # control plane + Tailscale Serve"
 
 echo
 echo "== summary: $ok ok, $warn warn, $fail fail =="

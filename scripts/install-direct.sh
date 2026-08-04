@@ -31,40 +31,81 @@ run() {
   if [[ "$DRY_RUN" == "1" ]]; then echo "DRY_RUN: $*"; else "$@"; fi
 }
 
-if ! xcrun devicectl --help >/dev/null 2>&1; then
-  echo "devicectl unavailable — use OTA mode" >&2
-  exit 1
+if [[ "$DRY_RUN" != "1" ]]; then
+  if ! xcrun devicectl --help >/dev/null 2>&1; then
+    echo "devicectl unavailable — use OTA mode" >&2
+    exit 1
+  fi
 fi
 
-if [[ -z "$DEVICE" ]]; then
-  # Pick first available iPhone-like device UUID from JSON if possible
-  DEVICE="$(xcrun devicectl list devices --json-output /dev/stdout 2>/dev/null | python3 - <<'PY' || true
-import json,sys
+pick_device() {
+  # Write JSON to a file first — a heredoc would steal stdin from a pipe.
+  local json_file
+  json_file="$(mktemp)"
+  # Prefer --json-output path (Xcode 15+). Fall back to plain text parse.
+  if xcrun devicectl list devices --json-output "$json_file" >/dev/null 2>&1; then
+    python3 - "$json_file" <<'PY'
+import json, sys
+path = sys.argv[1]
 try:
-    data=json.load(sys.stdin)
+    with open(path) as f:
+        data = json.load(f)
 except Exception:
     sys.exit(0)
-# Shape varies by Xcode version; try common paths
-candidates=[]
+candidates = []
+
 def walk(o):
     if isinstance(o, dict):
-        name=str(o.get("name") or o.get("deviceName") or "")
-        udid=o.get("identifier") or o.get("udid") or o.get("coreDeviceId") or o.get("hardwareProperties",{}).get("udid")
-        state=str(o.get("state") or o.get("connectionState") or o.get("visibility") or "")
-        dtype=str(o.get("deviceType") or o.get("hardwareProperties",{}).get("deviceType") or "")
-        if udid and ("iPhone" in name or "iPhone" in dtype or "iphone" in dtype.lower()):
-            candidates.append((str(udid), name, state))
+        name = str(o.get("name") or o.get("deviceName") or "")
+        udid = (
+            o.get("identifier")
+            or o.get("udid")
+            or o.get("coreDeviceId")
+            or (o.get("hardwareProperties") or {}).get("udid")
+        )
+        dtype = str(
+            o.get("deviceType")
+            or (o.get("hardwareProperties") or {}).get("deviceType")
+            or ""
+        )
+        if udid and ("iPhone" in name or "iphone" in dtype.lower() or "iPhone" in dtype):
+            candidates.append(str(udid))
         for v in o.values():
             walk(v)
     elif isinstance(o, list):
         for i in o:
             walk(i)
+
 walk(data)
-for udid,name,state in candidates:
-    print(udid)
-    break
+if candidates:
+    print(candidates[0])
 PY
-)"
+  else
+    # Text fallback: capture output first so a heredoc cannot steal stdin from a pipe.
+    local text
+    text="$(xcrun devicectl list devices 2>/dev/null || true)"
+    DEVICE_FROM_TEXT="$(printf '%s\n' "$text" | python3 -c '
+import re, sys
+uuid_re = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
+for line in sys.stdin:
+    if "iPhone" not in line and "iphone" not in line.lower():
+        continue
+    m = uuid_re.search(line)
+    if m:
+        print(m.group(0))
+        break
+')"
+    printf '%s' "$DEVICE_FROM_TEXT"
+  fi
+  rm -f "$json_file"
+}
+
+if [[ -z "$DEVICE" ]]; then
+  if [[ "$DRY_RUN" == "1" ]]; then
+    DEVICE="dry-run-device"
+  else
+    DEVICE="$(pick_device || true)"
+  fi
 fi
 
 if [[ -z "$DEVICE" ]]; then

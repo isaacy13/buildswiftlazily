@@ -56,10 +56,11 @@ export async function buildSetupChecklist(env: Env): Promise<{
     hint: "Set GITHUB_TOKEN in .env (Contents: Read + Actions: Write if using Actions engine)",
   });
 
+  const tsHostOk = Boolean(env.tsHost) && !/your-mac\.tailnet/i.test(env.tsHost);
   items.push({
     id: "ts_host",
     label: "Tailscale host (BSL_TS_HOST) for OTA",
-    ok: Boolean(env.tsHost),
+    ok: tsHostOk,
     required: false,
     hint: "Required for Ad Hoc OTA install links",
   });
@@ -79,10 +80,11 @@ export async function buildSetupChecklist(env: Env): Promise<{
     hint: "Install Tailscale on Mac + iPhone for off-LAN OTA",
   });
 
+  const teamOk = Boolean(env.teamId) && env.teamId !== "XXXXXXXXXX";
   items.push({
     id: "team",
     label: "Apple Team ID set",
-    ok: Boolean(env.teamId),
+    ok: teamOk,
     required: false,
     hint: "BSL_TEAM_ID helps automatic signing",
   });
@@ -105,17 +107,31 @@ export async function buildSetupChecklist(env: Env): Promise<{
     hint: "BSL_ASC_KEY_ID + BSL_ASC_ISSUER_ID + AuthKey_*.p8 in ~/.appstoreconnect/private_keys",
   });
 
-  const reposYaml = fs.existsSync(path.join(REPO_ROOT, "config/repos.yaml"));
+  const reposYamlPath = path.join(REPO_ROOT, "config/repos.yaml");
+  const reposYaml = fs.existsSync(reposYamlPath);
+  let guideConfigured = Boolean(env.guideAiRepo) && !/YOUR_/i.test(env.guideAiRepo);
+  if (reposYaml) {
+    try {
+      const text = fs.readFileSync(reposYamlPath, "utf8");
+      if (/YOUR_ORG_OR_USER\/GuideAI/.test(text) && !guideConfigured) {
+        guideConfigured = false;
+      } else if (!/YOUR_ORG_OR_USER\/GuideAI/.test(text)) {
+        guideConfigured = true;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
   items.push({
     id: "repos",
-    label: "config/repos.yaml present",
-    ok: reposYaml,
+    label: "config/repos.yaml present with GuideAI slug",
+    ok: reposYaml && guideConfigured,
     required: false,
     hint: "Copy from config/repos.example.yaml and set GuideAI slug",
   });
 
   const readyForLocalBuild = isDarwin && xcode && Boolean(env.githubToken);
-  const readyForOta = readyForLocalBuild && Boolean(env.tsHost);
+  const readyForOta = readyForLocalBuild && tsHostOk;
   const readyForTestFlight = readyForLocalBuild && ascKey && ascIssuer;
 
   return {

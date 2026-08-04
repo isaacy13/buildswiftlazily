@@ -16,27 +16,27 @@ Works **even when the GitHub Actions runner is down** — by default builds run 
 ## Quick start (Mac)
 
 ```bash
-cp config/env.example .env
-cp config/repos.example.yaml config/repos.yaml
-# edit: GuideAI owner/repo, BSL_TS_HOST, BSL_TEAM_ID, GITHUB_TOKEN, CURSOR_API_KEY
-# for TestFlight also: BSL_ASC_KEY_ID, BSL_ASC_ISSUER_ID + AuthKey_*.p8
+./scripts/bootstrap.sh
+# edit .env + config/repos.yaml (GuideAI slug, GITHUB_TOKEN, BSL_TEAM_ID;
+# for TestFlight: BSL_ASC_* + AuthKey_*.p8)
 
-./scripts/doctor.sh
-cd apps/control-plane && npm install && npm run build && npm start
-# other terminal:
-./scripts/serve-control.sh
+./scripts/start.sh
 ```
 
 Phone: Tailscale on → `https://$BSL_TS_HOST/` → Add to Home Screen → **Build**.
 
 Full checklist: **[docs/SETUP.md](docs/SETUP.md)** (includes UDID + TestFlight API key).
 
-## Tests (no Mac runner required)
+## Tests
 
 ```bash
+# Linux + Mac
 cd apps/control-plane && npm test && npm run build
 ./scripts/smoke-api.sh
 ./scripts/test-scripts.sh
+./scripts/validate-macos.sh
+
+# Self-hosted Mac runner also runs workflow: macOS validate
 ```
 
 ## Security

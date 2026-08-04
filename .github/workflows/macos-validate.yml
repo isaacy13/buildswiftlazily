@@ -1,0 +1,99 @@
+name: macOS validate
+
+# Thorough first-run / host validation on the self-hosted Mac runner.
+# Complements Linux unit CI — exercises Xcode, signing probes, and script dry-runs.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: macos-validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: [self-hosted, macOS, ios]
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Host sanity
+        run: |
+          set -euo pipefail
+          echo "host=$(hostname)"
+          echo "user=$(whoami)"
+          uname -a
+          sw_vers
+          command -v xcodebuild
+          xcodebuild -version
+          command -v xcrun
+          xcrun --find xcodebuild
+          command -v node
+          node -v
+          command -v npm
+          npm -v
+          command -v python3
+          python3 --version
+          command -v tailscale || echo "tailscale CLI missing (warn)"
+
+      - name: Signing identities (informational)
+        run: |
+          set -euo pipefail
+          echo "## Codesigning identities" >> "$GITHUB_STEP_SUMMARY"
+          {
+            security find-identity -v -p codesigning || true
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Doctor
+        run: |
+          set -euo pipefail
+          chmod +x scripts/*.sh
+          # Doctor may warn on missing .env in CI — that's expected; hard fails only for host tools.
+          set +e
+          ./scripts/doctor.sh | tee /tmp/doctor.out
+          STATUS=$?
+          set -e
+          echo "## Doctor" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/doctor.out >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # Fail only if macOS/xcode hard requirements failed
+          if grep -q "✗ Not macOS" /tmp/doctor.out; then exit 1; fi
+          if grep -q "✗ xcodebuild missing" /tmp/doctor.out; then exit 1; fi
+          if grep -q "✗ xcrun missing" /tmp/doctor.out; then exit 1; fi
+          exit 0
+
+      - name: Script dry-runs + path safety
+        run: |
+          set -euo pipefail
+          ./scripts/test-scripts.sh
+          ./scripts/validate-macos.sh
+
+      - name: Control plane install, test, build
+        working-directory: apps/control-plane
+        run: |
+          set -euo pipefail
+          npm ci
+          npm test
+          npm run build
+
+      - name: API smoke + first-run bootstrap dry check
+        run: |
+          set -euo pipefail
+          ./scripts/smoke-api.sh
+          BSL_BOOTSTRAP_DRY=1 ./scripts/bootstrap.sh
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## macOS validate"
+            echo ""
+            echo "- runner: \`$(hostname)\`"
+            echo "- xcode: \`$(xcodebuild -version 2>/dev/null | head -1 || echo missing)\`"
+            echo "- node: \`$(node -v)\`"
+          } >> "$GITHUB_STEP_SUMMARY"

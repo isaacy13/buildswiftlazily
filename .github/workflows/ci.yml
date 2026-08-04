@@ -26,4 +26,8 @@ jobs:
         run: ./scripts/smoke-api.sh
       - name: Script dry-runs
         working-directory: .
-        run: ./scripts/test-scripts.sh
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/test-scripts.sh
+          ./scripts/validate-macos.sh
+          BSL_BOOTSTRAP_DRY=1 ./scripts/bootstrap.sh
