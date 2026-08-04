@@ -66,18 +66,26 @@ export async function buildSetupChecklist(env: Env): Promise<{
   });
 
   let tailscale = false;
-  try {
-    await execFileAsync("tailscale", ["status"]);
-    tailscale = true;
-  } catch {
-    tailscale = false;
+  const tsCandidates = [
+    "tailscale",
+    "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+    `${process.env.HOME || ""}/Applications/Tailscale.app/Contents/MacOS/Tailscale`,
+  ];
+  for (const bin of tsCandidates) {
+    try {
+      await execFileAsync(bin, ["status"]);
+      tailscale = true;
+      break;
+    } catch {
+      /* try next */
+    }
   }
   items.push({
     id: "tailscale",
     label: "Tailscale connected",
     ok: tailscale,
     required: false,
-    hint: "Install Tailscale on Mac + iPhone for off-LAN OTA",
+    hint: "Install Tailscale app + CLI on Mac + iPhone for off-LAN OTA",
   });
 
   const teamOk = Boolean(env.teamId) && env.teamId !== "XXXXXXXXXX";

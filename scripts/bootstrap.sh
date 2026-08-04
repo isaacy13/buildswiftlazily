@@ -4,6 +4,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/lib.sh"
 
 DRY="${BSL_BOOTSTRAP_DRY:-0}"
 
@@ -26,8 +28,10 @@ fi
 
 # Auto-fill Tailscale MagicDNS host when possible
 if grep -q '^BSL_TS_HOST=your-mac\.tailnet' .env 2>/dev/null || grep -q '^BSL_TS_HOST=$' .env 2>/dev/null || grep -q '^BSL_TS_HOST=your-mac' .env 2>/dev/null; then
-  if command -v tailscale >/dev/null 2>&1 && tailscale status >/dev/null 2>&1; then
-    SELF="$(tailscale status --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("Self",{}).get("DNSName","").rstrip("."))' 2>/dev/null || true)"
+  # shellcheck disable=SC1091
+  source "$ROOT/scripts/lib.sh"
+  if bsl_find_tailscale >/dev/null && bsl_tailscale status >/dev/null 2>&1; then
+    SELF="$(bsl_tailscale status --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("Self",{}).get("DNSName","").rstrip("."))' 2>/dev/null || true)"
     if [[ -n "${SELF:-}" ]]; then
       if [[ "$DRY" == "1" ]]; then
         echo "DRY: would set BSL_TS_HOST=$SELF"
@@ -55,7 +59,35 @@ PY
       echo "Could not auto-detect Tailscale DNS name — edit BSL_TS_HOST in .env"
     fi
   else
-    echo "Tailscale not connected — edit BSL_TS_HOST in .env after login"
+    echo "Tailscale CLI not found/connected — edit BSL_TS_HOST in .env after enabling the CLI"
+  fi
+fi
+
+# Auto-fill BSL_TEAM_ID from keychain when still placeholder
+if grep -q '^BSL_TEAM_ID=XXXXXXXXXX$' .env 2>/dev/null || grep -q '^BSL_TEAM_ID=$' .env 2>/dev/null; then
+  # shellcheck disable=SC1091
+  source "$ROOT/scripts/lib.sh"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    TEAM_GUESS="$(bsl_guess_team_ids | head -1 || true)"
+    if [[ -n "${TEAM_GUESS:-}" ]]; then
+      if [[ "$DRY" == "1" ]]; then
+        echo "DRY: would set BSL_TEAM_ID=$TEAM_GUESS"
+      else
+        python3 - "$TEAM_GUESS" <<'PY'
+import pathlib, sys
+tid = sys.argv[1]
+p = pathlib.Path(".env")
+lines = []
+for line in p.read_text().splitlines():
+    if line.startswith("BSL_TEAM_ID="):
+        lines.append(f"BSL_TEAM_ID={tid}")
+    else:
+        lines.append(line)
+p.write_text("\n".join(lines) + "\n")
+print(f"Set BSL_TEAM_ID={tid} (from codesigning identities — confirm in Apple Developer)")
+PY
+      fi
+    fi
   fi
 fi
 

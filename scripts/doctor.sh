@@ -4,6 +4,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/lib.sh"
 
 ok=0
 warn=0
@@ -42,11 +44,12 @@ fi
 
 echo
 echo "[tailscale]"
-if command -v tailscale >/dev/null 2>&1; then
-  pass "tailscale CLI present"
-  if tailscale status >/dev/null 2>&1; then
+TS_BIN="$(bsl_find_tailscale || true)"
+if [[ -n "${TS_BIN:-}" ]]; then
+  pass "tailscale CLI: $TS_BIN"
+  if bsl_tailscale status >/dev/null 2>&1; then
     pass "tailscale connected"
-    self="$(tailscale status --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("Self",{}).get("DNSName","").rstrip("."))' 2>/dev/null || true)"
+    self="$(bsl_tailscale status --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("Self",{}).get("DNSName","").rstrip("."))' 2>/dev/null || true)"
     if [[ -n "${self:-}" ]]; then
       pass "MagicDNS self: $self"
     else
@@ -56,7 +59,8 @@ if command -v tailscale >/dev/null 2>&1; then
     note "tailscale installed but not connected/logged in"
   fi
 else
-  bad "tailscale CLI missing — install from https://tailscale.com/download"
+  # Soft warning: GUI Tailscale without CLI is common; OTA needs CLI for `tailscale serve`
+  note "tailscale CLI not on PATH — install CLI from the Tailscale macOS app (or brew), needed for OTA Serve"
 fi
 
 echo
@@ -95,6 +99,12 @@ if [[ -n "${BSL_TEAM_ID:-}" && "$BSL_TEAM_ID" != "XXXXXXXXXX" ]]; then
   pass "BSL_TEAM_ID set"
 else
   note "BSL_TEAM_ID unset (needed for signing)"
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    guessed="$(bsl_guess_team_ids | head -3 | tr '\n' ' ')"
+    if [[ -n "${guessed// /}" ]]; then
+      note "Possible team IDs from keychain: $guessed"
+    fi
+  fi
 fi
 if [[ -n "${CURSOR_API_KEY:-}" ]]; then
   pass "CURSOR_API_KEY set"
@@ -109,7 +119,6 @@ fi
 if [[ -n "${BSL_GUIDEAI_REPO:-}" && "$BSL_GUIDEAI_REPO" != "YOUR_ORG_OR_USER/GuideAI" ]]; then
   pass "BSL_GUIDEAI_REPO=$BSL_GUIDEAI_REPO"
 else
-  # Also check repos.yaml placeholder
   if [[ -f "$ROOT/config/repos.yaml" ]] && grep -q 'YOUR_ORG_OR_USER/GuideAI' "$ROOT/config/repos.yaml" 2>/dev/null; then
     note "GuideAI slug still placeholder in config/repos.yaml"
   fi

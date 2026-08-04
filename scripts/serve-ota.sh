@@ -49,6 +49,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/lib.sh"
+
 ARTIFACT_ROOT="${ARTIFACT_ROOT/#\~/$HOME}"
 mkdir -p "$ARTIFACT_ROOT"
 STATIC_ROOT="$ARTIFACT_ROOT/www"
@@ -69,9 +73,9 @@ ensure_server() {
   # out from under it when a deploy finishes.
   if control_plane_up; then
     echo "Control plane healthy on :$CONTROL_PORT — reusing it for OTA"
-    if command -v tailscale >/dev/null 2>&1 && [[ "$DRY_RUN" != "1" ]]; then
+    if bsl_find_tailscale >/dev/null 2>&1 && [[ "$DRY_RUN" != "1" ]]; then
       # Ensure Serve points at control plane (idempotent enough for personal use)
-      tailscale serve --bg --https=443 "http://127.0.0.1:${CONTROL_PORT}" >/dev/null 2>&1 || true
+      bsl_tailscale serve --bg --https=443 "http://127.0.0.1:${CONTROL_PORT}" >/dev/null 2>&1 || true
     fi
     return 0
   fi
@@ -99,13 +103,13 @@ ensure_server() {
     return 0
   fi
 
-  if ! command -v tailscale >/dev/null 2>&1; then
-    echo "tailscale CLI required" >&2
+  if ! bsl_find_tailscale >/dev/null; then
+    echo "tailscale CLI required (install from Tailscale.app or brew)" >&2
     exit 1
   fi
 
-  tailscale serve reset >/dev/null 2>&1 || true
-  tailscale serve --bg --https=443 "http://127.0.0.1:${PORT}"
+  bsl_tailscale serve reset >/dev/null 2>&1 || true
+  bsl_tailscale serve --bg --https=443 "http://127.0.0.1:${PORT}"
   echo "tailscale serve → http://127.0.0.1:${PORT}"
 }
 

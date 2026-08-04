@@ -24,18 +24,20 @@ Ad Hoc OTA only installs on devices whose UDID is in the provisioning profile.
 
 ## 2. Tailscale (Mac + iPhone)
 
-1. Install Tailscale on the **Mac** and **iPhone**; sign into the **same** tailnet
-2. Admin console → enable **MagicDNS** and **HTTPS Certificates**:  
+2. Install Tailscale on the **Mac** and **iPhone**; sign into the **same** tailnet
+3. On macOS, ensure the **CLI** is available (doctor looks in PATH and `Tailscale.app`):
+   - Tailscale menu → **CLI** install, or `brew install tailscale`
+4. Admin console → enable **MagicDNS** and **HTTPS Certificates**:  
    https://login.tailscale.com/admin/dns  
    https://login.tailscale.com/admin/settings/features
-3. On the Mac, note the hostname:
+5. On the Mac, note the hostname:
 
 ```bash
 tailscale status --self
 # e.g. isaac-macbook.tailnet-xxxx.ts.net
 ```
 
-4. Put that hostname in `.env` as `TS_HOST` / `BSL_TS_HOST`
+6. Put that hostname in `.env` as `TS_HOST` / `BSL_TS_HOST` (bootstrap often fills this)
 
 > macOS GUI Tailscale cannot path-serve folders directly. `scripts/serve-ota.sh` runs a local HTTP server and points `tailscale serve` at it.
 
@@ -146,6 +148,7 @@ launchctl load ~/Library/LaunchAgents/com.buildswiftlazily.control.plist
 
 | Symptom | Fix |
 |---------|-----|
+| Serve refused | Install Tailscale **CLI** (app menu → CLI), then `./scripts/serve-control.sh` |
 | Install link does nothing | Use **Safari**; confirm Tailscale connected on phone |
 | “Untrusted developer” | VPN & Device Management → Trust |
 | App installs but won't open | UDID missing from Ad Hoc profile → re-register, rebuild |

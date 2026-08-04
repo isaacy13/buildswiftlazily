@@ -40,7 +40,15 @@ jobs:
           npm -v
           command -v python3
           python3 --version
-          command -v tailscale || echo "tailscale CLI missing (warn)"
+          # Prefer PATH; also accept Tailscale.app CLI (common on first-run Macs)
+          if command -v tailscale >/dev/null 2>&1; then
+            tailscale version || true
+          elif [[ -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]]; then
+            echo "tailscale via Tailscale.app"
+            /Applications/Tailscale.app/Contents/MacOS/Tailscale version || true
+          else
+            echo "tailscale CLI missing (warn) — OTA Serve needs it; local builds still OK"
+          fi
 
       - name: Signing identities (informational)
         run: |

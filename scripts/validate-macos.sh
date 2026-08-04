@@ -24,6 +24,7 @@ for s in doctor bootstrap start serve-control serve-ota build-ios install-direct
     bad "scripts/$s.sh not executable"
   fi
 done
+[[ -f "$ROOT/scripts/lib.sh" ]] && pass "scripts/lib.sh" || bad "scripts/lib.sh missing"
 
 echo
 echo "[script CLI / dry-run contracts]"
