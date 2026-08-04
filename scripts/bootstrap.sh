@@ -26,6 +26,33 @@ else
   echo ".env already present"
 fi
 
+# Ensure BSL_API_TOKEN exists (fail-closed API auth)
+if ! grep -q '^BSL_API_TOKEN=.\+' .env 2>/dev/null; then
+  TOKEN="$(openssl rand -hex 24 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(24))')"
+  if [[ "$DRY" == "1" ]]; then
+    echo "DRY: would set BSL_API_TOKEN=<generated>"
+  else
+    python3 - "$TOKEN" <<'PY'
+import pathlib, sys
+token = sys.argv[1]
+p = pathlib.Path(".env")
+text = p.read_text() if p.exists() else ""
+lines = []
+replaced = False
+for line in text.splitlines():
+    if line.startswith("BSL_API_TOKEN="):
+        lines.append(f"BSL_API_TOKEN={token}")
+        replaced = True
+    else:
+        lines.append(line)
+if not replaced:
+    lines.append(f"BSL_API_TOKEN={token}")
+p.write_text("\n".join(lines) + "\n")
+print("Generated BSL_API_TOKEN in .env — paste into Status → API token on your phone")
+PY
+  fi
+fi
+
 # Auto-fill Tailscale MagicDNS host when possible
 if grep -q '^BSL_TS_HOST=your-mac\.tailnet' .env 2>/dev/null || grep -q '^BSL_TS_HOST=$' .env 2>/dev/null || grep -q '^BSL_TS_HOST=your-mac' .env 2>/dev/null; then
   # shellcheck disable=SC1091

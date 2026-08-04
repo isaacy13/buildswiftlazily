@@ -63,9 +63,22 @@ export function createApp(deps: AppDeps) {
 
   app.use("/api/*", async (c, next) => {
     const pathOnly = c.req.path.split("?")[0];
-    if (PUBLIC_API.has(pathOnly) || !env.apiToken) {
+    if (PUBLIC_API.has(pathOnly)) {
       await next();
       return;
+    }
+    if (!env.apiToken) {
+      if (env.allowInsecureApi) {
+        await next();
+        return;
+      }
+      return c.json(
+        {
+          error:
+            "API locked — set BSL_API_TOKEN in .env (or BSL_ALLOW_INSECURE_API=1 for local smoke only)",
+        },
+        401,
+      );
     }
     const provided = extractApiToken((n) => c.req.header(n));
     if (!apiTokenOk(env.apiToken, provided)) {
@@ -84,7 +97,7 @@ export function createApp(deps: AppDeps) {
       ...healthPayload(env),
       deployEngine: env.deployEngine,
       platform: process.platform,
-      apiAuthRequired: Boolean(env.apiToken),
+      apiAuthRequired: Boolean(env.apiToken) || !env.allowInsecureApi,
     }),
   );
 
@@ -105,7 +118,7 @@ export function createApp(deps: AppDeps) {
       deployEngine: env.deployEngine,
       modes: ["ota", "direct", "both", "testflight"],
       engines: ["local", "actions"],
-      apiAuthRequired: Boolean(env.apiToken),
+      apiAuthRequired: Boolean(env.apiToken) || !env.allowInsecureApi,
     }),
   );
 

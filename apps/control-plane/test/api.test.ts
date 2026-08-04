@@ -24,6 +24,8 @@ function testEnv(overrides: Partial<Env> = {}): Env {
     toolingRef: "main",
     deployEngine: "local",
     apiToken: "",
+    // Tests exercise handlers without a token unless a case opts into auth.
+    allowInsecureApi: true,
     ...overrides,
   };
 }
@@ -135,7 +137,7 @@ test("config exposes testflight mode", async () => {
 
 test("API token rejects unauthorized deploy", async () => {
   const { app } = createApp({
-    env: testEnv({ apiToken: "test-secret-token-12" }),
+    env: testEnv({ apiToken: "test-secret-token-12", allowInsecureApi: false }),
     repoConfig,
   });
   const denied = await app.request("/api/deploy", {
@@ -171,6 +173,18 @@ test("API token rejects unauthorized deploy", async () => {
   });
   assert.equal(ok.status, 200);
   delete process.env.BSL_DRY_RUN;
+});
+
+test("API locked when token missing and insecure not allowed", async () => {
+  const { app } = createApp({
+    env: testEnv({ apiToken: "", allowInsecureApi: false }),
+    repoConfig,
+  });
+  const res = await app.request("/api/repos");
+  assert.equal(res.status, 401);
+  const health = await app.request("/api/health");
+  assert.equal(health.status, 200);
+  assert.equal((await health.json()).apiAuthRequired, true);
 });
 
 test("deploy rejects unsafe scheme", async () => {

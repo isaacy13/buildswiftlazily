@@ -8,9 +8,13 @@ const env = loadEnv();
 const repoConfig = loadRepoConfig();
 const { app } = createApp({ env, repoConfig, jobs: globalJobs });
 
-if (!env.apiToken) {
+if (!env.apiToken && !env.allowInsecureApi) {
   logInfo(
-    "WARN: BSL_API_TOKEN unset — API relies on Tailscale/loopback only. Set a token for defense in depth.",
+    "WARN: BSL_API_TOKEN unset — API will reject requests until you set a token (or BSL_ALLOW_INSECURE_API=1).",
+  );
+} else if (!env.apiToken && env.allowInsecureApi) {
+  logInfo(
+    "WARN: BSL_ALLOW_INSECURE_API=1 — API has no app-layer auth (Tailscale/loopback only).",
   );
 }
 

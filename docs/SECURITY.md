@@ -7,7 +7,7 @@ Personal, single-operator tooling. Threat model is “don’t leak my IPAs, toke
 | Layer | Control |
 |-------|---------|
 | Network | **Tailscale Serve only** (not Funnel). UI and IPA/manifest URLs are unreachable off-tailnet. Control plane binds **127.0.0.1** only. |
-| App API | Optional **`BSL_API_TOKEN`** (Bearer / `X-BSL-Token`) on all `/api/*` except health — mitigates CSRF if a browser on-tailnet visits a hostile page. Same-origin only (no open CORS). |
+| App API | **`BSL_API_TOKEN` required** (Bearer / `X-BSL-Token`) on all `/api/*` except health. Opt out only with explicit `BSL_ALLOW_INSECURE_API=1` (smoke/dev). Same-origin only (no open CORS). |
 | Apple install | **Ad Hoc** provisioning — only registered UDIDs can install. |
 | Secrets | Cursor API key, GitHub PAT, signing material stay on the Mac / GitHub Actions secrets. Never shipped to the browser bundle. |
 | Build inputs | Repo allowlist / personal-account scope; sanitize `ref`, scheme, paths, titles; no shell interpolation of untrusted strings (Actions inputs via `env:` only). |
@@ -21,7 +21,9 @@ Apple’s `itms-services` installer fetches the manifest **without** browser Acc
 
 - Store tokens in `.env` (`chmod 600`) or macOS Keychain — `.env` is gitignored
 - Prefer fine-grained PAT: Contents Read on needed repos; Actions Write only on `buildswiftlazily` if dispatching remotely
-- Set `BSL_API_TOKEN` (`openssl rand -hex 24`) and paste it once in the PWA settings (stored in `localStorage` on that device)
+- Set `BSL_API_TOKEN` (`openssl rand -hex 24`; bootstrap auto-generates) and paste it once in the PWA Status tab (stored in `localStorage` on that device)
+- Do **not** set `BSL_ALLOW_INSECURE_API=1` on a Tailscale-exposed Mac — that re-enables cross-site deploy CSRF from any page you browse while on-tailnet
+- GitHub source tarballs are listed before extract (reject symlinks/hardlinks/`..`); post-extract walk denies symlink escapes
 - If importing `.p12` in CI on this self-hosted runner, use a temp keychain and **always** delete it in an `if: always()` step
 - Never echo secrets in logs; control-plane redacts tokens in console + job logs
 - Never enable **Tailscale Funnel** for this Serve endpoint
@@ -32,7 +34,6 @@ Apple’s `itms-services` installer fetches the manifest **without** browser Acc
 - Prefer unguessable artifact IDs (UUIDs)
 - TTL sweeper deletes old builds (default 7 days)
 - Do not upload IPAs to public GitHub Releases
-- GitHub source tarballs are listed before extract; members with `..` / absolute paths are rejected
 
 ## Runner hardening (recommended)
 

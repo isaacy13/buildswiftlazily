@@ -42,10 +42,12 @@ export type Env = {
   /** Prefer local builds on the Mac (works when Actions runner is down). */
   deployEngine: "local" | "actions";
   /**
-   * Optional shared secret for control-plane API (defense in depth beyond Tailscale).
-   * When set, mutating + sensitive API routes require Bearer / X-BSL-Token.
+   * Shared secret for control-plane API (defense in depth beyond Tailscale).
+   * Required unless allowInsecureApi is true.
    */
   apiToken: string;
+  /** Explicit opt-out of API token requirement (dev / smoke only). */
+  allowInsecureApi: boolean;
 };
 
 function loadDotEnv(file: string) {
@@ -97,6 +99,7 @@ export function loadEnv(): Env {
     deployEngine:
       process.env.BSL_DEPLOY_ENGINE === "actions" ? "actions" : "local",
     apiToken: process.env.BSL_API_TOKEN || "",
+    allowInsecureApi: process.env.BSL_ALLOW_INSECURE_API === "1",
   };
 }
 

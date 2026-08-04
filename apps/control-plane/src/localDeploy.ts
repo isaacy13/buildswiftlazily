@@ -71,20 +71,77 @@ async function downloadGithubTarball(
     extractTo,
     "--strip-components=1",
   ]);
+  assertNoSymlinkEscape(extractTo);
   return extractTo;
 }
 
-/** Reject path-traversal / absolute members before extracting a GitHub tarball. */
+/** Reject path-traversal / absolute / link members before extracting a GitHub tarball. */
 async function assertSafeTarball(tgz: string): Promise<void> {
-  const { stdout } = await execFileAsync("tar", ["-tzf", tgz], {
+  // -tv gives type flags (l/h) on GNU and BSD tar; also catch " -> " targets.
+  const { stdout } = await execFileAsync("tar", ["-tvzf", tgz], {
     maxBuffer: 20 * 1024 * 1024,
     timeout: 60_000,
   });
   for (const line of stdout.split("\n")) {
     const entry = line.trim();
     if (!entry) continue;
-    if (entry.startsWith("/") || entry.includes("..")) {
-      throw new Error("Refusing tarball with unsafe path entry");
+    const type = entry[0];
+    if (type === "l" || type === "h") {
+      throw new Error("Refusing tarball with symlink/hardlink entry");
+    }
+    // "name -> target" (symlink listing)
+    const arrow = entry.indexOf(" -> ");
+    if (arrow >= 0) {
+      const target = entry.slice(arrow + 4).trim();
+      if (target.startsWith("/") || target.includes("..")) {
+        throw new Error("Refusing tarball with unsafe link target");
+      }
+      throw new Error("Refusing tarball with symlink/hardlink entry");
+    }
+    // Strip permission/owner columns loosely: last whitespace-separated path-ish token
+    // Prefer scanning for absolute / .. anywhere in the listing line path portion.
+    if (/\s\/\S/.test(entry) || entry.includes("..")) {
+      // Absolute path members often show as leading /
+      const parts = entry.split(/\s+/);
+      const name = parts[parts.length - 1] || "";
+      if (name.startsWith("/") || name.includes("..")) {
+        throw new Error("Refusing tarball with unsafe path entry");
+      }
+    }
+  }
+}
+
+/** After extract: deny any symlink that resolves outside the checkout root. */
+function assertNoSymlinkEscape(root: string): void {
+  const absRoot = path.resolve(root);
+  const stack = [absRoot];
+  while (stack.length) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isSymbolicLink()) {
+        let target: string;
+        try {
+          target = fs.readlinkSync(full);
+        } catch {
+          throw new Error("Refusing unreadable symlink in checkout");
+        }
+        if (path.isAbsolute(target) || target.split(/[/\\]/).includes("..")) {
+          throw new Error("Refusing symlink escape in checkout");
+        }
+        const resolved = path.resolve(path.dirname(full), target);
+        if (resolved !== absRoot && !resolved.startsWith(absRoot + path.sep)) {
+          throw new Error("Refusing symlink escape in checkout");
+        }
+      } else if (ent.isDirectory()) {
+        stack.push(full);
+      }
     }
   }
 }
