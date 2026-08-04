@@ -1,0 +1,29 @@
+# buildswiftlazily repo / discovery config
+#
+# Copy to config/repos.yaml and edit.
+# config/repos.yaml is gitignored so your private slugs stay local.
+
+discovery:
+  # List all personal repos for the authenticated GitHub user
+  mode: personal
+  # Max repos to scan for iOS markers when refreshing cache
+  max_repos: 100
+  # Directory depth when scanning a checkout for xcodeproj/xcworkspace
+  scan_depth: 4
+
+defaults:
+  # Pinned favorite shown first in the PWA (must match a repos[].id below or a discovered name)
+  favorite: guideai
+  deploy_mode: ota
+  configuration: Release
+
+repos:
+  # Primary day-1 target — set the real owner/name for GuideAI
+  - id: guideai
+    repository: YOUR_ORG_OR_USER/GuideAI
+    display_name: GuideAI
+    # Optional overrides once you know them:
+    # project_path: .
+    # scheme: GuideAI
+    # bundle_id: com.example.GuideAI
+    favorite: true
