@@ -1,4 +1,5 @@
 import type { Env } from "./config.js";
+import { assertSafeAgentId } from "./config.js";
 
 export type CursorAgent = {
   id: string;
@@ -114,7 +115,8 @@ export async function getCursorAgent(
   env: Env,
   id: string,
 ): Promise<CursorAgent> {
-  for (const path of [`/v1/agents/${id}`, `/v0/agents/${id}`]) {
+  const safeId = assertSafeAgentId(id);
+  for (const path of [`/v1/agents/${safeId}`, `/v0/agents/${safeId}`]) {
     const res = await cursorFetch(env, path);
     if (!res.ok) continue;
     return normalizeAgent((await res.json()) as Record<string, unknown>);
@@ -123,9 +125,10 @@ export async function getCursorAgent(
 }
 
 export async function listCursorRuns(env: Env, agentId: string, limit = 20) {
+  const safeId = assertSafeAgentId(agentId);
   const res = await cursorFetch(
     env,
-    `/v1/agents/${agentId}/runs?limit=${limit}`,
+    `/v1/agents/${safeId}/runs?limit=${limit}`,
   );
   if (!res.ok) {
     // v0 may not have runs; return empty
@@ -155,8 +158,9 @@ export async function getCursorConversation(
   env: Env,
   agentId: string,
 ): Promise<CursorMessage[]> {
+  const safeId = assertSafeAgentId(agentId);
   // v0 conversation endpoint is the richest for full message history
-  const res = await cursorFetch(env, `/v0/agents/${agentId}/conversation`);
+  const res = await cursorFetch(env, `/v0/agents/${safeId}/conversation`);
   if (res.ok) {
     const data = (await res.json()) as {
       messages?: { id?: string; type?: string; text?: string }[];
@@ -214,7 +218,7 @@ export async function getCursorAgentDetail(env: Env, agentId: string) {
   }
 
   return {
-    agent: { ...agent, branches },
+    agent: { ...agent, branches, raw: undefined },
     runs,
     messages,
     userMessages,

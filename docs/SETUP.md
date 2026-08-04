@@ -75,6 +75,7 @@ Edit `.env`:
 
 - `BSL_TS_HOST`, `BSL_TEAM_ID`, `GITHUB_TOKEN` or `GH_TOKEN`, `CURSOR_API_KEY`
 - `BSL_DEPLOY_ENGINE=local` (default) — builds on this Mac without Actions
+- Optional but recommended: `BSL_API_TOKEN` (`openssl rand -hex 24`) — paste into Status → API token on the phone
 - For TestFlight: `BSL_ASC_KEY_ID`, `BSL_ASC_ISSUER_ID`, and place `AuthKey_<KEY_ID>.p8` in `~/.appstoreconnect/private_keys/`
 
 Create a Cursor API key: https://cursor.com/dashboard/api

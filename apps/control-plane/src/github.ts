@@ -1,7 +1,11 @@
 import {
+  assertSafeConfiguration,
+  assertSafeDeployMode,
   assertSafeRef,
   assertSafeRelPath,
   assertSafeRepo,
+  assertSafeScheme,
+  assertSafeTitle,
   type Env,
 } from "./config.js";
 
@@ -168,25 +172,29 @@ export async function dispatchDeploy(
   const repository = assertSafeRepo(input.repository);
   const ref = assertSafeRef(input.ref);
   const project_path = assertSafeRelPath(input.project_path || ".");
-  const scheme = input.scheme.trim();
-  if (!scheme || /[\n\r]/.test(scheme)) throw new Error("Invalid scheme");
+  const scheme = assertSafeScheme(input.scheme);
+  const configuration = assertSafeConfiguration(input.configuration || "Release");
+  const deploy_mode = assertSafeDeployMode(input.deploy_mode || "ota");
+  const title = assertSafeTitle(input.title || scheme);
+  const toolingRepo = assertSafeRepo(env.toolingRepo);
+  const toolingRef = assertSafeRef(env.toolingRef);
 
   const body = {
-    ref: env.toolingRef, // branch of buildswiftlazily that contains deploy-ios.yml
+    ref: toolingRef, // branch of buildswiftlazily that contains deploy-ios.yml
     inputs: {
       repository,
       ref,
       project_path,
       scheme,
-      configuration: input.configuration || "Release",
-      deploy_mode: input.deploy_mode || "ota",
-      title: input.title || scheme,
+      configuration,
+      deploy_mode,
+      title,
     },
   };
 
   const res = await gh(
     env,
-    `/repos/${env.toolingRepo}/actions/workflows/deploy-ios.yml/dispatches`,
+    `/repos/${toolingRepo}/actions/workflows/deploy-ios.yml/dispatches`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -199,18 +207,19 @@ export async function dispatchDeploy(
       throw new Error(
         `workflow_dispatch failed: deploy-ios.yml not found on ref "${env.toolingRef}". ` +
           `Keep Build where = This Mac (local), or set BSL_TOOLING_REF to the branch that has the workflow ` +
-          `(e.g. cursor/self-hosted-ios-deployment-706f) until it is merged to main. ${detail}`,
+          `(e.g. cursor/self-hosted-ios-deployment-706f) until it is merged to main.`,
       );
     }
-    throw new Error(`workflow_dispatch failed: ${res.status} ${detail}`);
+    throw new Error(`workflow_dispatch failed: ${res.status}`);
   }
   return { message: "Dispatched deploy-ios.yml" };
 }
 
 export async function listRecentWorkflowRuns(env: Env, perPage = 10) {
+  const toolingRepo = assertSafeRepo(env.toolingRepo);
   const res = await gh(
     env,
-    `/repos/${env.toolingRepo}/actions/workflows/deploy-ios.yml/runs?per_page=${perPage}`,
+    `/repos/${toolingRepo}/actions/workflows/deploy-ios.yml/runs?per_page=${perPage}`,
   );
   if (!res.ok) throw new Error(`list runs failed: ${res.status}`);
   const data = (await res.json()) as {
@@ -230,7 +239,9 @@ export async function listRecentWorkflowRuns(env: Env, perPage = 10) {
 }
 
 export async function getWorkflowRun(env: Env, runId: number) {
-  const res = await gh(env, `/repos/${env.toolingRepo}/actions/runs/${runId}`);
+  if (!Number.isInteger(runId) || runId <= 0) throw new Error("Invalid run id");
+  const toolingRepo = assertSafeRepo(env.toolingRepo);
+  const res = await gh(env, `/repos/${toolingRepo}/actions/runs/${runId}`);
   if (!res.ok) throw new Error(`get run failed: ${res.status}`);
   return res.json();
 }

@@ -41,6 +41,11 @@ export type Env = {
   toolingRef: string;
   /** Prefer local builds on the Mac (works when Actions runner is down). */
   deployEngine: "local" | "actions";
+  /**
+   * Optional shared secret for control-plane API (defense in depth beyond Tailscale).
+   * When set, mutating + sensitive API routes require Bearer / X-BSL-Token.
+   */
+  apiToken: string;
 };
 
 function loadDotEnv(file: string) {
@@ -91,6 +96,7 @@ export function loadEnv(): Env {
     toolingRef: process.env.BSL_TOOLING_REF || "main",
     deployEngine:
       process.env.BSL_DEPLOY_ENGINE === "actions" ? "actions" : "local",
+    apiToken: process.env.BSL_API_TOKEN || "",
   };
 }
 
@@ -115,7 +121,13 @@ export function loadRepoConfig(): AppConfig {
 }
 
 export function assertSafeRef(ref: string): string {
-  if (!ref || ref.includes("..") || /[\n\r;|$`\\]/.test(ref)) {
+  if (
+    !ref ||
+    ref.length > 256 ||
+    ref.includes("..") ||
+    /[\n\r;|$`\\&<>(){}[\]!]/.test(ref) ||
+    !/^[A-Za-z0-9._/\-]+$/.test(ref)
+  ) {
     throw new Error("Invalid git ref");
   }
   return ref;
@@ -130,8 +142,54 @@ export function assertSafeRepo(repo: string): string {
 
 export function assertSafeRelPath(p: string): string {
   const normalized = p.replace(/\\/g, "/") || ".";
-  if (normalized.startsWith("/") || normalized.includes("..")) {
+  if (
+    normalized.startsWith("/") ||
+    normalized.includes("..") ||
+    /[\n\r;|$`\\]/.test(normalized)
+  ) {
     throw new Error("Invalid project path");
   }
   return normalized;
+}
+
+/** Xcode scheme names — keep shell/metacharacter-safe. */
+export function assertSafeScheme(scheme: string): string {
+  const s = scheme.trim();
+  if (!s || s.length > 128 || !/^[A-Za-z0-9._+\- ]+$/.test(s)) {
+    throw new Error("Invalid scheme");
+  }
+  return s;
+}
+
+export function assertSafeConfiguration(configuration: string): string {
+  const c = configuration.trim();
+  if (!c || c.length > 64 || !/^[A-Za-z0-9._+\-]+$/.test(c)) {
+    throw new Error("Invalid configuration");
+  }
+  return c;
+}
+
+export function assertSafeTitle(title: string): string {
+  const t = title.trim();
+  if (!t) return "App";
+  if (t.length > 128 || /[\n\r\x00-\x08\x0b\x0c\x0e-\x1f]/.test(t)) {
+    throw new Error("Invalid title");
+  }
+  return t;
+}
+
+export function assertSafeDeployMode(
+  mode: string,
+): "ota" | "direct" | "both" | "testflight" {
+  if (mode === "ota" || mode === "direct" || mode === "both" || mode === "testflight") {
+    return mode;
+  }
+  throw new Error("Invalid deploy_mode");
+}
+
+export function assertSafeAgentId(id: string): string {
+  if (!id || id.length > 128 || !/^[A-Za-z0-9_-]+$/.test(id)) {
+    throw new Error("Invalid agent id");
+  }
+  return id;
 }

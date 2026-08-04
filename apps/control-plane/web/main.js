@@ -1,3 +1,5 @@
+const TOKEN_KEY = "bsl_api_token";
+
 const state = {
   tab: "projects",
   config: null,
@@ -24,14 +26,28 @@ const state = {
   error: "",
   warning: "",
   pollTimer: null,
+  apiToken: "",
+  apiAuthRequired: false,
 };
 
 const app = document.getElementById("app");
 
+try {
+  state.apiToken = localStorage.getItem(TOKEN_KEY) || "";
+} catch {
+  state.apiToken = "";
+}
+
+function authHeaders() {
+  const h = { "Content-Type": "application/json" };
+  if (state.apiToken) h["Authorization"] = `Bearer ${state.apiToken}`;
+  return h;
+}
+
 async function api(path, opts) {
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(opts?.headers || {}) },
     ...opts,
+    headers: { ...authHeaders(), ...(opts?.headers || {}) },
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || res.statusText);
@@ -56,7 +72,12 @@ function setTab(tab) {
 
 async function bootstrap() {
   try {
+    const health = await api("/api/health");
+    state.apiAuthRequired = Boolean(health.apiAuthRequired);
     state.config = await api("/api/config");
+    state.apiAuthRequired = Boolean(
+      state.config.apiAuthRequired || state.apiAuthRequired,
+    );
     state.setup = await api("/api/setup");
     state.deployMode = state.config.defaults?.deploy_mode || "ota";
     state.engine = state.config.deployEngine || "local";
@@ -70,7 +91,15 @@ async function bootstrap() {
     if (fav) await selectRepo(fav.full_name, fav.default_branch || "main", fav);
     else state.error = "No repos yet — set GuideAI in config/repos.yaml and GITHUB_TOKEN in .env";
   } catch (e) {
-    state.error = String(e.message || e);
+    const msg = String(e.message || e);
+    if (/unauthorized/i.test(msg) && !state.apiToken) {
+      state.error =
+        "API token required — open Status, paste BSL_API_TOKEN from .env, then Save.";
+      state.apiAuthRequired = true;
+      state.tab = "status";
+    } else {
+      state.error = msg;
+    }
   }
   render();
 }
@@ -523,6 +552,18 @@ function renderStatus() {
 
   return `
     ${renderSetupBanner()}
+    <div class="card"><h2>API token</h2>
+      <p class="muted">Optional defense-in-depth when <code>BSL_API_TOKEN</code> is set on the Mac. Stored only in this browser.</p>
+      <label>Token <input id="apiTokenInput" type="password" autocomplete="off" value="${escapeAttr(state.apiToken)}" placeholder="paste from .env" /></label>
+      <button class="secondary" id="saveApiToken" style="margin-top:0.75rem">Save token</button>
+      ${
+        state.apiAuthRequired && !state.apiToken
+          ? `<p class="error" style="margin-top:0.5rem">Server requires a token — API calls will fail until you save one.</p>`
+          : state.apiAuthRequired
+            ? `<p class="success" style="margin-top:0.5rem">Token saved for this device.</p>`
+            : `<p class="muted" style="margin-top:0.5rem">Server is not requiring a token (Tailscale/loopback only).</p>`
+      }
+    </div>
     <div class="card"><h2>Environment</h2>${health}
       <button class="secondary" id="refreshStatus" style="margin-top:0.75rem">Refresh</button>
     </div>
@@ -617,6 +658,23 @@ function render() {
 
   const refreshStatus = app.querySelector("#refreshStatus");
   if (refreshStatus) refreshStatus.addEventListener("click", loadStatus);
+
+  const saveApiToken = app.querySelector("#saveApiToken");
+  if (saveApiToken) {
+    saveApiToken.addEventListener("click", async () => {
+      const input = app.querySelector("#apiTokenInput");
+      state.apiToken = (input?.value || "").trim();
+      try {
+        if (state.apiToken) localStorage.setItem(TOKEN_KEY, state.apiToken);
+        else localStorage.removeItem(TOKEN_KEY);
+      } catch {
+        /* ignore */
+      }
+      state.message = "API token saved on this device";
+      state.error = "";
+      await bootstrap();
+    });
+  }
 }
 
 function escapeHtml(s) {

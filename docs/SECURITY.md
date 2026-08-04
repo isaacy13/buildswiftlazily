@@ -6,11 +6,12 @@ Personal, single-operator tooling. Threat model is “don’t leak my IPAs, toke
 
 | Layer | Control |
 |-------|---------|
-| Network | **Tailscale Serve only** (not Funnel). UI and IPA/manifest URLs are unreachable off-tailnet. |
+| Network | **Tailscale Serve only** (not Funnel). UI and IPA/manifest URLs are unreachable off-tailnet. Control plane binds **127.0.0.1** only. |
+| App API | Optional **`BSL_API_TOKEN`** (Bearer / `X-BSL-Token`) on all `/api/*` except health — mitigates CSRF if a browser on-tailnet visits a hostile page. Same-origin only (no open CORS). |
 | Apple install | **Ad Hoc** provisioning — only registered UDIDs can install. |
 | Secrets | Cursor API key, GitHub PAT, signing material stay on the Mac / GitHub Actions secrets. Never shipped to the browser bundle. |
-| Build inputs | Repo allowlist / personal-account scope; sanitize `ref` and paths; no shell interpolation of untrusted strings. |
-| Audit | Every deploy creates a GitHub Actions run. |
+| Build inputs | Repo allowlist / personal-account scope; sanitize `ref`, scheme, paths, titles; no shell interpolation of untrusted strings (Actions inputs via `env:` only). |
+| Audit | Every Actions deploy creates a GitHub Actions run; local jobs keep redacted logs. |
 
 ## Why not Cloudflare Access in front of IPAs
 
@@ -20,8 +21,10 @@ Apple’s `itms-services` installer fetches the manifest **without** browser Acc
 
 - Store tokens in `.env` (`chmod 600`) or macOS Keychain — `.env` is gitignored
 - Prefer fine-grained PAT: Contents Read on needed repos; Actions Write only on `buildswiftlazily` if dispatching remotely
+- Set `BSL_API_TOKEN` (`openssl rand -hex 24`) and paste it once in the PWA settings (stored in `localStorage` on that device)
 - If importing `.p12` in CI on this self-hosted runner, use a temp keychain and **always** delete it in an `if: always()` step
-- Never echo secrets in logs; redact in control-plane logging
+- Never echo secrets in logs; control-plane redacts tokens in console + job logs
+- Never enable **Tailscale Funnel** for this Serve endpoint
 
 ## Artifact hygiene
 
@@ -29,6 +32,7 @@ Apple’s `itms-services` installer fetches the manifest **without** browser Acc
 - Prefer unguessable artifact IDs (UUIDs)
 - TTL sweeper deletes old builds (default 7 days)
 - Do not upload IPAs to public GitHub Releases
+- GitHub source tarballs are listed before extract; members with `..` / absolute paths are rejected
 
 ## Runner hardening (recommended)
 
@@ -36,10 +40,11 @@ Apple’s `itms-services` installer fetches the manifest **without** browser Acc
 - Keep the Mac awake / prevent sleep during builds, or use `caffeinate` in scripts
 - Tailscale ACLs: only your user/devices can reach the Serve port
 - Don’t expose the Actions runner webhook beyond GitHub’s outbound model
+- Single-flight deploy gate: only one local build at a time (+ short cooldown)
 
 ## What this does **not** protect against
 
-- Someone already on your Tailscale identity / stolen laptop session
+- Someone already on your Tailscale identity / stolen laptop session (unless `BSL_API_TOKEN` is set and not on that device)
 - Malicious code in a branch you voluntarily build (treat branches like local `xcodebuild`)
 - Compromised Apple Developer account
 

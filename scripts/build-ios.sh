@@ -52,6 +52,19 @@ if [[ "$PROJECT_PATH" == *".."* ]]; then
   echo "Invalid project-path: $PROJECT_PATH" >&2
   exit 2
 fi
+# Scheme / configuration must be shell-safe (no metacharacters)
+if [[ ! "$SCHEME" =~ ^[A-Za-z0-9._+\ -]+$ ]]; then
+  echo "Invalid scheme: $SCHEME" >&2
+  exit 2
+fi
+if [[ ! "$CONFIGURATION" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+  echo "Invalid configuration: $CONFIGURATION" >&2
+  exit 2
+fi
+if [[ -n "$TEAM_ID" && ! "$TEAM_ID" =~ ^[A-Za-z0-9]{10}$ ]]; then
+  echo "Invalid team-id (expected 10 alphanumeric chars)" >&2
+  exit 2
+fi
 
 ABS_ROOT="$(cd "$ROOT" && pwd)"
 WORK="$ABS_ROOT/$PROJECT_PATH"

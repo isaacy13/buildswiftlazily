@@ -6,9 +6,13 @@ import { pipeline } from "node:stream/promises";
 import { createWriteStream } from "node:fs";
 import type { Env } from "./config.js";
 import {
+  assertSafeConfiguration,
+  assertSafeDeployMode,
   assertSafeRef,
   assertSafeRelPath,
   assertSafeRepo,
+  assertSafeScheme,
+  assertSafeTitle,
   REPO_ROOT,
 } from "./config.js";
 import type { JobStore } from "./jobs.js";
@@ -59,8 +63,30 @@ async function downloadGithubTarball(
   await pipeline(res.body as unknown as NodeJS.ReadableStream, createWriteStream(tgz));
   const extractTo = path.join(destDir, "src");
   fs.mkdirSync(extractTo, { recursive: true });
-  await execFileAsync("tar", ["-xzf", tgz, "-C", extractTo, "--strip-components=1"]);
+  await assertSafeTarball(tgz);
+  await execFileAsync("tar", [
+    "-xzf",
+    tgz,
+    "-C",
+    extractTo,
+    "--strip-components=1",
+  ]);
   return extractTo;
+}
+
+/** Reject path-traversal / absolute members before extracting a GitHub tarball. */
+async function assertSafeTarball(tgz: string): Promise<void> {
+  const { stdout } = await execFileAsync("tar", ["-tzf", tgz], {
+    maxBuffer: 20 * 1024 * 1024,
+    timeout: 60_000,
+  });
+  for (const line of stdout.split("\n")) {
+    const entry = line.trim();
+    if (!entry) continue;
+    if (entry.startsWith("/") || entry.includes("..")) {
+      throw new Error("Refusing tarball with unsafe path entry");
+    }
+  }
 }
 
 async function runScript(
@@ -100,10 +126,10 @@ export async function runLocalDeploy(
   const repository = assertSafeRepo(input.repository);
   const ref = assertSafeRef(input.ref);
   const projectPath = assertSafeRelPath(input.project_path || ".");
-  const scheme = input.scheme.trim();
-  const mode = input.deploy_mode || "ota";
-  const configuration = input.configuration || "Release";
-  const title = input.title || scheme;
+  const scheme = assertSafeScheme(input.scheme);
+  const mode = assertSafeDeployMode(input.deploy_mode || "ota");
+  const configuration = assertSafeConfiguration(input.configuration || "Release");
+  const title = assertSafeTitle(input.title || scheme);
 
   jobs.patch(jobId, { status: "running" });
   jobs.appendLog(jobId, `Local deploy ${repository}@${ref} scheme=${scheme} mode=${mode}`);

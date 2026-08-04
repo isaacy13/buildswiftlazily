@@ -14,7 +14,7 @@ function testEnv(overrides: Partial<Env> = {}): Env {
     tsHost: "mac.tailnet.ts.net",
     controlPort: 8799,
     otaPort: 8788,
-    teamId: "TEAM123",
+    teamId: "TEAM123456",
     artifactRoot,
     artifactTtlDays: 7,
     githubToken: "",
@@ -23,6 +23,7 @@ function testEnv(overrides: Partial<Env> = {}): Env {
     toolingRepo: "isaacy13/buildswiftlazily",
     toolingRef: "main",
     deployEngine: "local",
+    apiToken: "",
     ...overrides,
   };
 }
@@ -130,4 +131,59 @@ test("config exposes testflight mode", async () => {
   const data = await res.json();
   assert.ok(data.modes.includes("testflight"));
   assert.ok(data.engines.includes("local"));
+});
+
+test("API token rejects unauthorized deploy", async () => {
+  const { app } = createApp({
+    env: testEnv({ apiToken: "test-secret-token-12" }),
+    repoConfig,
+  });
+  const denied = await app.request("/api/deploy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      repository: "isaacy13/GuideAI",
+      ref: "main",
+      scheme: "GuideAI",
+      engine: "local",
+    }),
+  });
+  assert.equal(denied.status, 401);
+
+  const health = await app.request("/api/health");
+  assert.equal(health.status, 200);
+  assert.equal((await health.json()).apiAuthRequired, true);
+
+  process.env.BSL_DRY_RUN = "1";
+  const ok = await app.request("/api/deploy", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer test-secret-token-12",
+    },
+    body: JSON.stringify({
+      repository: "isaacy13/GuideAI",
+      ref: "main",
+      scheme: "GuideAI",
+      deploy_mode: "ota",
+      engine: "local",
+    }),
+  });
+  assert.equal(ok.status, 200);
+  delete process.env.BSL_DRY_RUN;
+});
+
+test("deploy rejects unsafe scheme", async () => {
+  const { app } = createApp({ env: testEnv(), repoConfig });
+  const res = await app.request("/api/deploy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      repository: "isaacy13/GuideAI",
+      ref: "main",
+      scheme: "GuideAI; rm -rf /",
+      engine: "local",
+    }),
+  });
+  assert.equal(res.status, 400);
 });
