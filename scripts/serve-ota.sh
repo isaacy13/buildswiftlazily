@@ -130,6 +130,18 @@ if [[ ! "$ARTIFACT_ID" =~ ^[A-Za-z0-9_-]+$ ]]; then
   echo "Invalid artifact-id" >&2
   exit 2
 fi
+if [[ ! "$BUNDLE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  echo "Invalid bundle-id" >&2
+  exit 2
+fi
+if [[ ! "$BUNDLE_VERSION" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+  echo "Invalid bundle-version" >&2
+  exit 2
+fi
+if [[ ! "$TITLE" =~ ^[A-Za-z0-9._+\ -]+$ ]]; then
+  echo "Invalid title" >&2
+  exit 2
+fi
 
 DEST="$STATIC_ROOT/ota/$ARTIFACT_ID"
 mkdir -p "$DEST"

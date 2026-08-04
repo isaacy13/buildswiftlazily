@@ -6,6 +6,8 @@ import { pipeline } from "node:stream/promises";
 import { createWriteStream } from "node:fs";
 import type { Env } from "./config.js";
 import {
+  assertSafeBundleId,
+  assertSafeBundleVersion,
   assertSafeConfiguration,
   assertSafeDeployMode,
   assertSafeRef,
@@ -77,36 +79,32 @@ async function downloadGithubTarball(
 
 /** Reject path-traversal / absolute / link members before extracting a GitHub tarball. */
 async function assertSafeTarball(tgz: string): Promise<void> {
-  // -tv gives type flags (l/h) on GNU and BSD tar; also catch " -> " targets.
-  const { stdout } = await execFileAsync("tar", ["-tvzf", tgz], {
+  const { stdout: names } = await execFileAsync("tar", ["-tzf", tgz], {
     maxBuffer: 20 * 1024 * 1024,
     timeout: 60_000,
   });
-  for (const line of stdout.split("\n")) {
+  for (const line of names.split("\n")) {
+    const entry = line.trim();
+    if (!entry) continue;
+    if (entry.startsWith("/") || entry.includes("..")) {
+      throw new Error("Refusing tarball with unsafe path entry");
+    }
+  }
+
+  // Type flags: reject symlink (l) / hardlink (h) members (GNU + BSD tar -tv).
+  const { stdout: listing } = await execFileAsync("tar", ["-tvzf", tgz], {
+    maxBuffer: 20 * 1024 * 1024,
+    timeout: 60_000,
+  });
+  for (const line of listing.split("\n")) {
     const entry = line.trim();
     if (!entry) continue;
     const type = entry[0];
     if (type === "l" || type === "h") {
       throw new Error("Refusing tarball with symlink/hardlink entry");
     }
-    // "name -> target" (symlink listing)
-    const arrow = entry.indexOf(" -> ");
-    if (arrow >= 0) {
-      const target = entry.slice(arrow + 4).trim();
-      if (target.startsWith("/") || target.includes("..")) {
-        throw new Error("Refusing tarball with unsafe link target");
-      }
+    if (entry.includes(" -> ")) {
       throw new Error("Refusing tarball with symlink/hardlink entry");
-    }
-    // Strip permission/owner columns loosely: last whitespace-separated path-ish token
-    // Prefer scanning for absolute / .. anywhere in the listing line path portion.
-    if (/\s\/\S/.test(entry) || entry.includes("..")) {
-      // Absolute path members often show as leading /
-      const parts = entry.split(/\s+/);
-      const name = parts[parts.length - 1] || "";
-      if (name.startsWith("/") || name.includes("..")) {
-        throw new Error("Refusing tarball with unsafe path entry");
-      }
     }
   }
 }
@@ -272,9 +270,13 @@ export async function runLocalDeploy(
             .readFileSync(appPathFile, "utf8")
             .replace(/^APP_PATH=/, "")
             .trim();
+          const resolved = path.resolve(app);
+          if (!resolved.startsWith(path.resolve(outDir) + path.sep)) {
+            throw new Error("App path escapes build output directory");
+          }
           await runScript(jobId, jobs, path.join(REPO_ROOT, "scripts/install-direct.sh"), [
             "--app",
-            app,
+            resolved,
           ]);
         }
       }
@@ -289,10 +291,14 @@ export async function runLocalDeploy(
       let bid = "com.example.app";
       let bver = "1";
       if (fs.existsSync(path.join(outDir, "bundle_id.txt"))) {
-        bid = fs.readFileSync(path.join(outDir, "bundle_id.txt"), "utf8").trim();
+        bid = assertSafeBundleId(
+          fs.readFileSync(path.join(outDir, "bundle_id.txt"), "utf8"),
+        );
       }
       if (fs.existsSync(path.join(outDir, "bundle_version.txt"))) {
-        bver = fs.readFileSync(path.join(outDir, "bundle_version.txt"), "utf8").trim();
+        bver = assertSafeBundleVersion(
+          fs.readFileSync(path.join(outDir, "bundle_version.txt"), "utf8"),
+        );
       }
       const serveArgs = [
         "--ipa",

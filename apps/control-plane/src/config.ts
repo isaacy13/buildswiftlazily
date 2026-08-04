@@ -175,10 +175,28 @@ export function assertSafeConfiguration(configuration: string): string {
 export function assertSafeTitle(title: string): string {
   const t = title.trim();
   if (!t) return "App";
-  if (t.length > 128 || /[\n\r\x00-\x08\x0b\x0c\x0e-\x1f]/.test(t)) {
+  // Align with scheme: shell- and XML-safe display names only.
+  if (t.length > 128 || !/^[A-Za-z0-9._+\- ]+$/.test(t)) {
     throw new Error("Invalid title");
   }
   return t;
+}
+
+/** Reverse-DNS style bundle id from IPA metadata. */
+export function assertSafeBundleId(id: string): string {
+  const s = id.trim();
+  if (!s || s.length > 210 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(s)) {
+    throw new Error("Invalid bundle id");
+  }
+  return s;
+}
+
+export function assertSafeBundleVersion(ver: string): string {
+  const s = ver.trim();
+  if (!s || s.length > 64 || !/^[A-Za-z0-9._+-]+$/.test(s)) {
+    throw new Error("Invalid bundle version");
+  }
+  return s;
 }
 
 export function assertSafeDeployMode(

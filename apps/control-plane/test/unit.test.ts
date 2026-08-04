@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { detectIosProjects } from "../src/github.js";
 import {
   assertSafeAgentId,
+  assertSafeBundleId,
+  assertSafeBundleVersion,
   assertSafeConfiguration,
   assertSafeDeployMode,
   assertSafeRef,
@@ -56,11 +58,16 @@ test("assertSafeScheme / configuration / title / mode", () => {
   assert.equal(assertSafeConfiguration("Release"), "Release");
   assert.throws(() => assertSafeConfiguration("Release`id`"));
   assert.equal(assertSafeTitle("My App"), "My App");
+  assert.throws(() => assertSafeTitle('bad"title'));
   assert.throws(() => assertSafeTitle("bad\ntitle"));
   assert.equal(assertSafeDeployMode("ota"), "ota");
   assert.throws(() => assertSafeDeployMode("wipe"));
   assert.equal(assertSafeAgentId("bc_abc-123"), "bc_abc-123");
   assert.throws(() => assertSafeAgentId("../x"));
+  assert.equal(assertSafeBundleId("com.example.GuideAI"), "com.example.GuideAI");
+  assert.throws(() => assertSafeBundleId("com;rm"));
+  assert.equal(assertSafeBundleVersion("1.2.3"), "1.2.3");
+  assert.throws(() => assertSafeBundleVersion("1\n2"));
 });
 
 test("apiTokenOk uses constant-time compare", () => {

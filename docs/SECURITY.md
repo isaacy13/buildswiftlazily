@@ -45,7 +45,7 @@ Apple’s `itms-services` installer fetches the manifest **without** browser Acc
 
 ## What this does **not** protect against
 
-- Someone already on your Tailscale identity / stolen laptop session (unless `BSL_API_TOKEN` is set and not on that device)
+- Someone with your Tailscale identity **and** the device-local API token / stolen laptop session
 - Malicious code in a branch you voluntarily build (treat branches like local `xcodebuild`)
 - Compromised Apple Developer account
 

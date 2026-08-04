@@ -73,8 +73,8 @@ jobs:
           [[ "$PROJECT_PATH" != *..* ]] || { echo "Invalid project_path"; exit 1; }
           [[ "$SCHEME" =~ ^[A-Za-z0-9._+\ -]+$ ]] || { echo "Invalid scheme"; exit 1; }
           [[ "$CONFIGURATION" =~ ^[A-Za-z0-9._+-]+$ ]] || { echo "Invalid configuration"; exit 1; }
-          # Title may be empty; reject control chars / newlines if set
-          if [[ -n "$TITLE" ]] && [[ "$TITLE" == *$'\n'* || "$TITLE" == *$'\r'* ]]; then
+          # Title may be empty; when set must match scheme-safe charset
+          if [[ -n "$TITLE" ]] && [[ ! "$TITLE" =~ ^[A-Za-z0-9._+\ -]+$ ]]; then
             echo "Invalid title"; exit 1
           fi
 
@@ -124,6 +124,10 @@ jobs:
         run: |
           set -euo pipefail
           APP="$(cut -d= -f2- < "$OUT_DIR/app_path.txt")"
+          case "$APP" in
+            "$OUT_DIR"/*) ;;
+            *) echo "App path escapes out_dir"; exit 1 ;;
+          esac
           tooling/scripts/install-direct.sh --app "$APP"
 
       - name: Publish OTA
@@ -141,8 +145,14 @@ jobs:
           if [[ -z "$TITLE" ]]; then TITLE="$SCHEME"; fi
           BID="com.example.app"
           BVER="1"
-          [[ -f "$OUT_DIR/bundle_id.txt" ]] && BID="$(cat "$OUT_DIR/bundle_id.txt")"
-          [[ -f "$OUT_DIR/bundle_version.txt" ]] && BVER="$(cat "$OUT_DIR/bundle_version.txt")"
+          if [[ -f "$OUT_DIR/bundle_id.txt" ]]; then
+            BID="$(tr -d '\r\n' < "$OUT_DIR/bundle_id.txt")"
+            [[ "$BID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo "Invalid bundle id from IPA"; exit 1; }
+          fi
+          if [[ -f "$OUT_DIR/bundle_version.txt" ]]; then
+            BVER="$(tr -d '\r\n' < "$OUT_DIR/bundle_version.txt")"
+            [[ "$BVER" =~ ^[A-Za-z0-9._+-]+$ ]] || { echo "Invalid bundle version from IPA"; exit 1; }
+          fi
           [[ -n "${BSL_TS_HOST:-}" ]] || { echo "Set secret/var BSL_TS_HOST"; exit 1; }
           set +e
           OUT="$(tooling/scripts/serve-ota.sh \
