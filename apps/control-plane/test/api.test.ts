@@ -5,7 +5,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { createApp } from "../src/app.js";
 import { JobStore } from "../src/jobs.js";
-import { runLocalDeploy } from "../src/localDeploy.js";
+import { runLocalDeploy, injectCheckoutFiles } from "../src/localDeploy.js";
 import type { Env } from "../src/config.js";
 
 function testEnv(overrides: Partial<Env> = {}): Env {
@@ -133,6 +133,26 @@ test("config exposes testflight mode", async () => {
   const data = await res.json();
   assert.ok(data.modes.includes("testflight"));
   assert.ok(data.engines.includes("local"));
+});
+
+test("injectCheckoutFiles copies dest=src into checkout", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bsl-inj-"));
+  const src = path.join(root, "GoogleService-Info.plist");
+  fs.writeFileSync(src, "plist");
+  const checkout = path.join(root, "checkout");
+  fs.mkdirSync(checkout);
+  const copied = injectCheckoutFiles(
+    checkout,
+    `ios/GuideAI/GoogleService-Info.plist=${src}`,
+  );
+  assert.equal(copied.length, 1);
+  assert.equal(
+    fs.readFileSync(
+      path.join(checkout, "ios/GuideAI/GoogleService-Info.plist"),
+      "utf8",
+    ),
+    "plist",
+  );
 });
 
 test("API token rejects unauthorized deploy", async () => {

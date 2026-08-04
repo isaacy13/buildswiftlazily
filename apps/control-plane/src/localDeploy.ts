@@ -15,11 +15,56 @@ import {
   assertSafeRepo,
   assertSafeScheme,
   assertSafeTitle,
+  expandHome,
   REPO_ROOT,
 } from "./config.js";
 import type { JobStore } from "./jobs.js";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Copy gitignored secrets into a tarball checkout before xcodebuild.
+ * BSL_CHECKOUT_INJECT entries: `rel/path/in/checkout=/absolute/or/~/source`
+ * separated by commas or newlines.
+ */
+export function injectCheckoutFiles(
+  checkoutRoot: string,
+  spec: string,
+): { dest: string; src: string }[] {
+  const copied: { dest: string; src: string }[] = [];
+  const entries = spec
+    .split(/[,\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const entry of entries) {
+    const eq = entry.indexOf("=");
+    if (eq <= 0) {
+      throw new Error(
+        `Invalid BSL_CHECKOUT_INJECT entry "${entry}" (want dest=src)`,
+      );
+    }
+    const destRel = assertSafeRelPath(entry.slice(0, eq).trim());
+    const src = expandHome(entry.slice(eq + 1).trim());
+    if (!src || src.includes("\0")) {
+      throw new Error(`Invalid BSL_CHECKOUT_INJECT source for ${destRel}`);
+    }
+    if (!fs.existsSync(src) || !fs.statSync(src).isFile()) {
+      throw new Error(`BSL_CHECKOUT_INJECT source missing: ${src}`);
+    }
+    const destAbs = path.resolve(checkoutRoot, destRel);
+    const rootResolved = path.resolve(checkoutRoot);
+    if (
+      destAbs !== rootResolved &&
+      !destAbs.startsWith(rootResolved + path.sep)
+    ) {
+      throw new Error(`BSL_CHECKOUT_INJECT dest escapes checkout: ${destRel}`);
+    }
+    fs.mkdirSync(path.dirname(destAbs), { recursive: true });
+    fs.copyFileSync(src, destAbs);
+    copied.push({ dest: destRel, src });
+  }
+  return copied;
+}
 
 export type LocalDeployInput = {
   repository: string;
@@ -228,6 +273,14 @@ export async function runLocalDeploy(
     } else {
       checkout = await downloadGithubTarball(env, repository, ref, workRoot);
       jobs.appendLog(jobId, `Checkout ready at ${checkout}`);
+    }
+
+    const injectSpec = (process.env.BSL_CHECKOUT_INJECT || "").trim();
+    if (injectSpec) {
+      const copied = injectCheckoutFiles(checkout, injectSpec);
+      for (const c of copied) {
+        jobs.appendLog(jobId, `Injected ${c.dest} from local file`);
+      }
     }
 
     const outDir = path.join(env.artifactRoot, "builds", jobId);
