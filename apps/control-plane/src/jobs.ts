@@ -11,6 +11,7 @@ export type DeployJob = {
   ref: string;
   scheme: string;
   deployMode: string;
+  platform?: "ios" | "watchos";
   logs: string[];
   installUrl?: string;
   itmsUrl?: string;

@@ -14,6 +14,8 @@ export type RepoConfigEntry = {
   project_path?: string;
   scheme?: string;
   bundle_id?: string;
+  /** Target platform for archive/install. Default ios. */
+  platform?: "ios" | "watchos";
   favorite?: boolean;
 };
 
@@ -206,6 +208,12 @@ export function assertSafeDeployMode(
     return mode;
   }
   throw new Error("Invalid deploy_mode");
+}
+
+export function assertSafePlatform(platform: string): "ios" | "watchos" {
+  const p = platform.trim().toLowerCase();
+  if (p === "ios" || p === "watchos") return p;
+  throw new Error("Invalid platform (expected ios or watchos)");
 }
 
 export function assertSafeAgentId(id: string): string {

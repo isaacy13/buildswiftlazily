@@ -24,6 +24,7 @@ Apple’s `itms-services` installer fetches the manifest **without** browser Acc
 - Store tokens in `.env` (`chmod 600`) or macOS Keychain — `.env` is gitignored
 - Prefer fine-grained PAT: Contents Read on needed repos; Actions Write only on your `buildswiftlazily` fork if dispatching remotely
 - Set `BSL_API_TOKEN` (`openssl rand -hex 24`; bootstrap auto-generates) and paste it once in the PWA Status tab (stored in `localStorage` on that device)
+- Optional `BSL_KEYCHAIN_PASSWORD` unlocks the login keychain for local `xcodebuild` after sleep — treat it like the Mac login secret (`.env` only, never the browser). Prefer `./scripts/prepare-keychain.sh` so codesign ACLs do not need a GUI prompt. When set, `build-ios.sh` unlocks then **unsets** the variable before `xcodebuild` so Run Script phases do not inherit it; the control plane also omits it from env for install/OTA/TestFlight child processes; job logs redact it.
 - Do **not** set `BSL_ALLOW_INSECURE_API=1` on a Tailscale-exposed Mac — that re-enables cross-site deploy CSRF from any page you browse while on-tailnet
 - GitHub source tarballs are listed before extract (reject symlinks/hardlinks/`..`); post-extract walk denies symlink escapes
 - If importing `.p12` in CI on a self-hosted runner, use a temp keychain and **always** delete it in an `if: always()` step
@@ -36,6 +37,8 @@ Apple’s `itms-services` installer fetches the manifest **without** browser Acc
 - Prefer unguessable artifact IDs (UUIDs)
 - TTL sweeper deletes old builds (default 7 days)
 - Do not upload IPAs to public GitHub Releases
+- `/ota/<uuid>/` is intentionally unauthenticated (Apple’s installer cannot send API tokens). Tailscale is the gate; UUIDs are unguessable. Anyone already on your tailnet who learns a UUID can fetch that IPA
+- Prefer the **local** deploy engine on a public tooling fork. Actions logs/summaries must not print full OTA URLs (MagicDNS host + UUID); the workflow redacts those lines. Keep `BSL_TS_HOST` out of public repo Variables when possible (use environment secrets on a private fork if you rely on Actions OTA)
 
 ## Runner hardening (recommended)
 

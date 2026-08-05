@@ -73,6 +73,28 @@ You may keep an existing Distribution cert if it already appears under My Certif
 
 **Settings → General → VPN & Device Management** → trust the developer cert if prompted.
 
+### 1e. Unattended signing (couch builds — no Keychain password dialogs)
+
+macOS will often prompt **“codesign wants to use … in your keychain”** the first times you sign. **There is no Apple API to approve that dialog from your iPhone** (and remote-desktop “clicks” are often blocked on purpose).
+
+Do this **once on the Mac** so builds started from the PWA never wait on you:
+
+```bash
+./scripts/prepare-keychain.sh
+```
+
+That unlocks the login keychain, extends the lock timeout, and runs `security set-key-partition-list` so Apple’s `codesign` / xcodebuild tools may use signing keys without a GUI prompt.
+
+Optional — so builds still work after the Mac sleeps and the keychain re-locks — add to `.env` (`chmod 600`):
+
+```bash
+BSL_KEYCHAIN_PASSWORD='your-login-keychain-password'
+```
+
+`build-ios.sh` unlocks before archive when that variable is set. Doctor and the PWA Setup checklist show whether prepare has been run (`~/.config/buildswiftlazily/keychain-prepared`).
+
+If a dialog still appears **once** after prepare, click **Always Allow** with a keyboard/mouse attached to the Mac (not a synthetic remote click). After that, phone-triggered builds should stay unattended.
+
 ### Common signing failures
 
 | Symptom | Cause / fix |
@@ -81,6 +103,28 @@ You may keep an existing Distribution cert if it already appears under My Certif
 | Cert installs but won’t sign | `.cer` without private key → CSR must be from this Mac |
 | IPA installs, app won’t open | UDID not in the **current** Ad Hoc profile → add device, regenerate/refresh profile, rebuild |
 | `No signing certificate` / export fail | Sign into Xcode Accounts; set `BSL_TEAM_ID`; ensure Distribution identity in keychain |
+| Keychain password / “codesign wants to…” while you’re on the couch | §1e — `./scripts/prepare-keychain.sh` (+ optional `BSL_KEYCHAIN_PASSWORD`) |
+| `errSecInteractionNotAllowed` / `-25308` / User interaction is not allowed | Keychain locked or ACL not prepared → §1e |
+
+## Platforms (iOS + watchOS)
+
+| Kind | How to build here |
+|------|-------------------|
+| **iPhone app** | Platform **iPhone** (default). Scheme archives `generic/platform=iOS`. |
+| **iPhone + companion Watch** | Still use **iPhone**. Archive the iOS scheme that embeds the Watch app — Apple deploys the Watch piece with/after the phone install. |
+| **Independent / Watch-only** | Platform **Apple Watch**. Scheme must archive for `generic/platform=watchOS`. Prefer **Direct** to a paired Watch (Developer Mode on). TestFlight usually needs an iOS container scheme (modern Xcode “Watch App” templates include one). |
+
+Register the **Watch UDID** in the Apple Developer portal for Ad Hoc, same as iPhones. Pair the Watch, open it once in **Xcode → Devices and Simulators** so the developer disk image mounts, then Direct install can find it.
+
+Pin a Watch app in `config/repos.yaml`:
+
+```yaml
+  - id: mywatch
+    repository: you/MyWatchApp
+    display_name: MyWatch
+    scheme: MyWatch Watch App
+    platform: watchos
+```
 
 ## 2. Tailscale (Mac + iPhone)
 
@@ -151,8 +195,14 @@ App Store signing + ASC API (not Ad Hoc).
 1. [App Store Connect API keys](https://appstoreconnect.apple.com/access/integrations/api) → generate (App Manager) → download `.p8` once.
 2. `.env`: `BSL_ASC_KEY_ID`, `BSL_ASC_ISSUER_ID`.
 3. `mkdir -p ~/.appstoreconnect/private_keys && mv AuthKey_XXX.p8 ~/.appstoreconnect/private_keys/`
+4. Ensure GuideAI (or your app) already exists in App Store Connect with a matching bundle id.
+5. Bump **CFBundleVersion** (build number) before each upload — duplicates are rejected.
 
-PWA → install method **TestFlight**. Processing often takes a few minutes.
+PWA → install method **TestFlight** → Build & upload.
+
+**After upload:** check [App Store Connect → TestFlight → Builds](https://appstoreconnect.apple.com/apps) — not only the TestFlight iPhone app. Status goes Processing → Ready to Test (usually minutes; sometimes longer). Answer **Export Compliance** if ASC asks, or the build can sit for hours.
+
+**Do not Ctrl+C** the Mac terminal that is running `./scripts/start.sh` / the control plane during upload — that aborts `altool` mid-transfer. Leave the Mac awake until the job log shows `TESTFLIGHT_UPLOAD=ok`.
 
 ## 6. Doctor
 
@@ -196,6 +246,10 @@ launchctl load ~/Library/LaunchAgents/com.buildswiftlazily.control.plist
 | `devicectl` finds nothing | Pair USB/Wi‑Fi or use OTA |
 | Actions 404 | `deploy-ios.yml` on `BSL_TOOLING_REF`, or use local engine |
 | `Could not get GOOGLE_APP_ID` / ARCHIVE FAILED | Gitignored `GoogleService-Info.plist` missing from tarball — set `BSL_CHECKOUT_INJECT` (see `config/env.example`) |
+| TestFlight empty after “upload” | Confirm job log has `TESTFLIGHT_UPLOAD=ok`. Check **ASC → TestFlight → Builds**, not only the phone app. Ctrl+C on the Mac shell aborts upload. |
+| ASC build stuck Processing / Missing Compliance | Answer Export Compliance in App Store Connect; wait out processing (can exceed 1h). |
+| altool auth / missing AuthKey | `AuthKey_<BSL_ASC_KEY_ID>.p8` under `~/.appstoreconnect/private_keys/`; key needs App Manager+ |
+| Duplicate build rejected | Bump CFBundleVersion, rebuild, upload again |
 
 ## Next
 

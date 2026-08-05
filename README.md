@@ -2,7 +2,7 @@
 
 Build and install your own iOS apps from the couch.
 
-Open a small PWA on your **iPhone** (or Mac), pick a repo/branch, optionally peek at recent **Cursor Cloud Agent** threads, tap **Build & Install**. The IPA lands on your phone over **Tailscale OTA**, a **paired device**, or **TestFlight**.
+Open a small PWA on your **iPhone** (or Mac), pick a repo/branch, choose **iPhone** or **Apple Watch**, optionally peek at recent **Cursor Cloud Agent** threads, tap **Build & Install**. The IPA lands on your phone or Watch over **Tailscale OTA**, a **paired device**, or **TestFlight**.
 
 Default path: builds run **locally on your Mac** (no Actions runner required). You can optionally dispatch to a self-hosted GitHub Actions Mac runner.
 
@@ -77,7 +77,8 @@ Full checklist (Apple Distribution vs Ad Hoc, UDID, TestFlight, runner): **[docs
 |------|-------------------|
 | Instant install off home Wi‑Fi | **OTA** + Tailscale on the phone |
 | Install anywhere via Apple | **TestFlight** (ASC API key + `.p8`) |
-| USB / Wi‑Fi paired to this Mac | **Direct** (`devicectl`) |
+| USB / Wi‑Fi paired to this Mac | **Direct** (`devicectl`) — iPhone or Apple Watch |
+| Independent watchOS app | Platform **Apple Watch** + Direct (or TestFlight with a container scheme) |
 | Actions runner offline / idle | Engine = **This Mac (local)** (default) |
 
 ## Configuration cheatsheet
@@ -87,6 +88,7 @@ Full checklist (Apple Distribution vs Ad Hoc, UDID, TestFlight, runner): **[docs
 | `BSL_TS_HOST` | MagicDNS name of the Mac (no `https://`) |
 | `BSL_API_TOKEN` | Required API auth; bootstrap generates one |
 | `BSL_TEAM_ID` | 10-char Apple Team ID for signing |
+| `BSL_KEYCHAIN_PASSWORD` | Optional; unlocks login keychain after sleep for unattended codesign ([docs/SETUP.md](docs/SETUP.md) §1e) |
 | `GITHUB_TOKEN` | Contents read (+ Actions write if dispatching) |
 | `BSL_DEPLOY_ENGINE` | `local` (default) or `actions` |
 | `BSL_TOOLING_REPO` / `BSL_TOOLING_REF` | Where `deploy-ios.yml` lives (Actions engine only) |

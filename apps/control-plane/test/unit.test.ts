@@ -7,6 +7,7 @@ import {
   assertSafeBundleVersion,
   assertSafeConfiguration,
   assertSafeDeployMode,
+  assertSafePlatform,
   assertSafeRef,
   assertSafeRelPath,
   assertSafeRepo,
@@ -21,17 +22,27 @@ import {
 } from "../src/ota.js";
 import { apiTokenOk, DeployGate, publicError, redact } from "../src/security.js";
 
-test("detectIosProjects finds workspace and skips Pods", () => {
+test("detectXcodeProjects finds workspace, skips Pods, hints watchOS", () => {
   const paths = [
     "GuideAI.xcodeproj/project.pbxproj",
     "GuideAI.xcworkspace/contents.xcworkspacedata",
     "Pods/Some.xcodeproj/project.pbxproj",
     "Features/Foo/Foo.xcodeproj/project.pbxproj",
+    "WatchApp/MyWatch Watch App.xcodeproj/project.pbxproj",
   ];
   const found = detectIosProjects(paths, 4);
   assert.ok(found.some((f) => f.name === "GuideAI" && f.kind === "workspace"));
   assert.ok(!found.some((f) => f.projectPath.includes("Pods")));
   assert.ok(found.some((f) => f.projectPath === "Features/Foo"));
+  const watch = found.find((f) => /watch/i.test(f.name));
+  assert.ok(watch);
+  assert.ok(watch.platforms.includes("watchos"));
+});
+
+test("assertSafePlatform accepts ios and watchos", () => {
+  assert.equal(assertSafePlatform("ios"), "ios");
+  assert.equal(assertSafePlatform("watchOS"), "watchos");
+  assert.throws(() => assertSafePlatform("tvos"));
 });
 
 test("assertSafeRepo accepts owner/name only", () => {
@@ -137,6 +148,34 @@ test("redact strips tokens", () => {
     "x [REDACTED] y",
   );
   assert.match(redact("Basic YWJjZGVmZ2hpams="), /REDACTED/);
+});
+
+test("redact strips BSL_KEYCHAIN_PASSWORD including short values", () => {
+  const prev = process.env.BSL_KEYCHAIN_PASSWORD;
+  process.env.BSL_KEYCHAIN_PASSWORD = "hunter2";
+  try {
+    assert.equal(
+      redact("unlock failed for hunter2 in keychain"),
+      "unlock failed for [REDACTED] in keychain",
+    );
+  } finally {
+    if (prev === undefined) delete process.env.BSL_KEYCHAIN_PASSWORD;
+    else process.env.BSL_KEYCHAIN_PASSWORD = prev;
+  }
+});
+
+test("childEnvForScript only passes keychain password to build-ios.sh", async () => {
+  const { childEnvForScript } = await import("../src/localDeploy.js");
+  const base = {
+    PATH: "/usr/bin",
+    BSL_KEYCHAIN_PASSWORD: "sekrit-pass",
+    OTHER: "1",
+  };
+  const forBuild = childEnvForScript("build-ios.sh", base);
+  assert.equal(forBuild.BSL_KEYCHAIN_PASSWORD, "sekrit-pass");
+  const forInstall = childEnvForScript("install-direct.sh", base);
+  assert.equal(forInstall.BSL_KEYCHAIN_PASSWORD, undefined);
+  assert.equal(forInstall.OTHER, "1");
 });
 
 test("DeployGate enforces single flight and cooldown", () => {

@@ -10,6 +10,7 @@ import {
   assertSafeBundleVersion,
   assertSafeConfiguration,
   assertSafeDeployMode,
+  assertSafePlatform,
   assertSafeRef,
   assertSafeRelPath,
   assertSafeRepo,
@@ -73,6 +74,7 @@ export type LocalDeployInput = {
   scheme: string;
   configuration?: string;
   deploy_mode?: "ota" | "direct" | "both" | "testflight";
+  platform?: "ios" | "watchos";
   title?: string;
 };
 
@@ -189,16 +191,33 @@ function assertNoSymlinkEscape(root: string): void {
   }
 }
 
+/**
+ * Env for spawned build scripts. By default strip the login keychain password so
+ * install/OTA/TestFlight children (and any Xcode Run Scripts they might wrap)
+ * never inherit it. Only `build-ios.sh` needs the password for unlock.
+ */
+export function childEnvForScript(
+  scriptBasename: string,
+  base: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env = { ...base };
+  if (scriptBasename !== "build-ios.sh") {
+    delete env.BSL_KEYCHAIN_PASSWORD;
+  }
+  return env;
+}
+
 async function runScript(
   jobId: string,
   jobs: JobStore,
   script: string,
   args: string[],
 ): Promise<{ stdout: string; stderr: string }> {
-  jobs.appendLog(jobId, `$ ${path.basename(script)} ${args.join(" ")}`);
+  const basename = path.basename(script);
+  jobs.appendLog(jobId, `$ ${basename} ${args.join(" ")}`);
   try {
     const { stdout, stderr } = await execFileAsync(script, args, {
-      env: { ...process.env },
+      env: childEnvForScript(basename),
       maxBuffer: 20 * 1024 * 1024,
       timeout: 60 * 60 * 1000,
     });
@@ -228,11 +247,15 @@ export async function runLocalDeploy(
   const projectPath = assertSafeRelPath(input.project_path || ".");
   const scheme = assertSafeScheme(input.scheme);
   const mode = assertSafeDeployMode(input.deploy_mode || "ota");
+  const platform = assertSafePlatform(input.platform || "ios");
   const configuration = assertSafeConfiguration(input.configuration || "Release");
   const title = assertSafeTitle(input.title || scheme);
 
-  jobs.patch(jobId, { status: "running" });
-  jobs.appendLog(jobId, `Local deploy ${repository}@${ref} scheme=${scheme} mode=${mode}`);
+  jobs.patch(jobId, { status: "running", platform });
+  jobs.appendLog(
+    jobId,
+    `Local deploy ${repository}@${ref} scheme=${scheme} mode=${mode} platform=${platform}`,
+  );
 
   const forceDry = process.env.BSL_DRY_RUN === "1";
   const dry = forceDry || !hasXcodebuild();
@@ -305,6 +328,8 @@ export async function runLocalDeploy(
       scheme,
       "--configuration",
       configuration,
+      "--platform",
+      platform,
       "--out-dir",
       outDir,
       "--mode",
@@ -327,9 +352,12 @@ export async function runLocalDeploy(
           if (!resolved.startsWith(path.resolve(outDir) + path.sep)) {
             throw new Error("App path escapes build output directory");
           }
+          const deviceClass = platform === "watchos" ? "watch" : "phone";
           await runScript(jobId, jobs, path.join(REPO_ROOT, "scripts/install-direct.sh"), [
             "--app",
             resolved,
+            "--device-class",
+            deviceClass,
           ]);
         }
       }
@@ -384,14 +412,26 @@ export async function runLocalDeploy(
       const ipa = path.join(outDir, "App.ipa");
       if (dry) fs.writeFileSync(ipa, "dry-run-ipa");
       if (!fs.existsSync(ipa)) throw new Error("IPA missing after build");
-      const tfArgs = ["--ipa", ipa];
+      let bver = "";
+      if (fs.existsSync(path.join(outDir, "bundle_version.txt"))) {
+        bver = fs.readFileSync(path.join(outDir, "bundle_version.txt"), "utf8").trim();
+      }
+      if (bver) jobs.appendLog(jobId, `CFBundleVersion=${bver} (must be unique per upload)`);
+      const tfArgs = ["--ipa", ipa, "--platform", platform];
       if (dry) tfArgs.push("--dry-run");
-      await runScript(jobId, jobs, path.join(REPO_ROOT, "scripts/upload-testflight.sh"), tfArgs);
+      const tf = await runScript(
+        jobId,
+        jobs,
+        path.join(REPO_ROOT, "scripts/upload-testflight.sh"),
+        tfArgs,
+      );
+      const uploaded = /TESTFLIGHT_UPLOAD=ok/.test(`${tf.stdout}\n${tf.stderr}`);
       jobs.patch(jobId, {
-        testflightNote:
-          dry
-            ? "DRY_RUN: would upload to App Store Connect / TestFlight."
-            : "Uploaded to App Store Connect. Processing can take a few minutes — open TestFlight.",
+        testflightNote: dry
+          ? "DRY_RUN: would upload to App Store Connect / TestFlight."
+          : uploaded
+            ? "Upload accepted. Check App Store Connect → TestFlight → Builds (not only the phone app). Processing is often minutes; Missing Compliance can stall for hours."
+            : "Upload finished without TESTFLIGHT_UPLOAD=ok — check the log. If you Ctrl+C’d the Mac shell, re-run; the upload was likely aborted.",
       });
     }
 
@@ -401,11 +441,27 @@ export async function runLocalDeploy(
     });
     jobs.appendLog(jobId, "Deploy finished successfully");
   } catch (e) {
+    const raw = e instanceof Error ? e.message : String(e);
+    const blob = `${raw}\n${String((e as { stdout?: string; stderr?: string }).stdout || "")}\n${String((e as { stderr?: string }).stderr || "")}`;
+    let error = raw;
+    if (
+      /errSecInteractionNotAllowed|-25308|User interaction is not allowed|CSSMERR_DL_INVALID_ACCESS_CREDENTIALS|codesign.*keychain|failed to sign/i.test(
+        blob,
+      )
+    ) {
+      error = `${raw} — Keychain blocked unattended codesign. On the Mac run ./scripts/prepare-keychain.sh (optional: set BSL_KEYCHAIN_PASSWORD in .env). You cannot approve the Keychain dialog from the iPhone.`;
+    } else if (
+      /Unable to authenticate|AuthKey_|BSL_ASC_KEY|ASC API auth|TESTFLIGHT|altool|No suitable application records|duplicate|CFBundleVersion/i.test(
+        blob,
+      )
+    ) {
+      error = `${raw} — TestFlight/ASC upload issue. Confirm BSL_ASC_KEY_ID + ISSUER_ID, AuthKey_*.p8, a unique CFBundleVersion, and an ASC app record for this bundle id. Do not Ctrl+C the Mac control-plane shell mid-upload.`;
+    }
     jobs.patch(jobId, {
       status: "failed",
-      error: e instanceof Error ? e.message : String(e),
+      error,
       finishedAt: new Date().toISOString(),
     });
-    jobs.appendLog(jobId, `FAILED: ${e}`);
+    jobs.appendLog(jobId, `FAILED: ${error}`);
   }
 }

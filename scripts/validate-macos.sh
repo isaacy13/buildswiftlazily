@@ -44,6 +44,11 @@ fi
 
 out=$(BSL_DRY_RUN=1 "$ROOT/scripts/build-ios.sh" --root "$TMP/proj" --scheme Demo --out-dir "$OUT" --mode ota --dry-run)
 echo "$out" | grep -q 'method=ad-hoc' && pass "ota export method=ad-hoc" || bad "ota export method missing"
+echo "$out" | grep -q 'generic/platform=iOS' && pass "ios destination" || bad "ios destination missing"
+
+out=$(BSL_DRY_RUN=1 "$ROOT/scripts/build-ios.sh" --root "$TMP/proj" --scheme Demo --out-dir "$OUT" --mode ota --platform watchos --dry-run)
+echo "$out" | grep -q 'generic/platform=watchOS' && pass "watchos destination" || bad "watchos destination missing"
+echo "$out" | grep -q 'platform=watchos' && pass "watchos platform tag" || bad "watchos platform tag missing"
 echo "$out" | grep -q 'BUILD_OK' && pass "build-ios BUILD_OK" || bad "build-ios BUILD_OK missing"
 [[ -f "$OUT/App.ipa" ]] && pass "dry-run writes App.ipa placeholder" || bad "missing App.ipa placeholder"
 
@@ -68,6 +73,7 @@ fi
 
 out=$(BSL_DRY_RUN=1 "$ROOT/scripts/upload-testflight.sh" --ipa "$OUT/App.ipa" --dry-run)
 echo "$out" | grep -q TESTFLIGHT_UPLOAD && pass "upload-testflight dry-run" || bad "upload-testflight dry-run"
+echo "$out" | grep -q 'upload-package' && pass "upload-testflight prefers upload-package" || bad "upload-package missing in dry-run"
 
 mkdir -p "$TMP/Demo.app"
 echo '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.demo</string></dict></plist>' > "$TMP/Demo.app/Info.plist"

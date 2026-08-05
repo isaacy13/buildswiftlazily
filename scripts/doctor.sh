@@ -138,6 +138,17 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   else
     note "No Apple Development/Distribution identity — open Xcode → Settings → Accounts and sign in"
   fi
+  MARKER="$(bsl_keychain_prepared_marker)"
+  if [[ -f "$MARKER" ]]; then
+    pass "Keychain prepared for unattended codesign ($MARKER)"
+  else
+    note "Keychain not prepared — run ./scripts/prepare-keychain.sh so couch builds don’t wait on Mac password dialogs"
+  fi
+  if [[ -n "${BSL_KEYCHAIN_PASSWORD:-}" ]]; then
+    pass "BSL_KEYCHAIN_PASSWORD set (builds can unlock after sleep)"
+  else
+    note "BSL_KEYCHAIN_PASSWORD unset — OK if Mac stays unlocked; set it to unlock after sleep/lock"
+  fi
 else
   note "Skipping signing probe (not Darwin)"
 fi
