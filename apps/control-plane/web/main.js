@@ -1108,21 +1108,8 @@ function renderStatus() {
   `;
 }
 
-function render() {
-  const body =
-    state.tab === "projects"
-      ? renderProjects()
-      : state.tab === "cursor"
-        ? renderCursor()
-        : renderStatus();
-
-  const statusLabel = state.busy
-    ? "building…"
-    : state.openingAgentId || state.agentsLoading
-      ? "loading…"
-      : setupMissing().length
-        ? "setup needed"
-        : "ready";
+function renderShellOnce() {
+  if (app.querySelector("nav.tabs") && app.querySelector("#view")) return;
 
   app.innerHTML = `
     <header class="appbar">
@@ -1130,25 +1117,17 @@ function render() {
         <h1>buildswiftlazily</h1>
         <span class="tagline">couch → phone</span>
       </div>
-      <div class="pill ${
-        state.busy
-          ? "pill-busy"
-          : state.openingAgentId || state.agentsLoading
-            ? "pill-busy"
-            : setupMissing().length
-              ? "pill-warn"
-              : "pill-ok"
-      }">${statusLabel}</div>
+      <div class="pill" id="statusPill">…</div>
     </header>
-    <main id="view">${body}</main>
+    <main id="view"></main>
     <nav class="tabs" aria-label="Primary">
-      <button type="button" class="${state.tab === "projects" ? "active" : ""}" data-tab="projects" aria-current="${state.tab === "projects" ? "page" : "false"}">
+      <button type="button" data-tab="projects" aria-current="false">
         ${TAB_ICONS.projects}<span>Build</span>
       </button>
-      <button type="button" class="${state.tab === "cursor" ? "active" : ""}" data-tab="cursor" aria-current="${state.tab === "cursor" ? "page" : "false"}">
+      <button type="button" data-tab="cursor" aria-current="false">
         ${TAB_ICONS.cursor}<span>Agents</span>
       </button>
-      <button type="button" class="${state.tab === "status" ? "active" : ""}" data-tab="status" aria-current="${state.tab === "status" ? "page" : "false"}">
+      <button type="button" data-tab="status" aria-current="false">
         ${TAB_ICONS.status}<span>Setup</span>
       </button>
     </nav>
@@ -1157,11 +1136,14 @@ function render() {
   app.querySelectorAll("[data-tab]").forEach((btn) =>
     btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab"))),
   );
-  app.querySelectorAll("[data-tab-jump]").forEach((btn) =>
+}
+
+function bindViewEvents(view) {
+  view.querySelectorAll("[data-tab-jump]").forEach((btn) =>
     btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab-jump"))),
   );
 
-  const repoSelect = app.querySelector("#repoSelect");
+  const repoSelect = view.querySelector("#repoSelect");
   if (repoSelect) {
     repoSelect.addEventListener("change", async (e) => {
       const full = e.target.value;
@@ -1169,7 +1151,7 @@ function render() {
       await selectRepo(full, meta?.default_branch, meta);
     });
   }
-  const branchSelect = app.querySelector("#branchSelect");
+  const branchSelect = view.querySelector("#branchSelect");
   if (branchSelect) {
     branchSelect.addEventListener("change", async (e) => {
       state.selectedRef = e.target.value;
@@ -1181,34 +1163,34 @@ function render() {
       render();
     });
   }
-  const pathInput = app.querySelector("#pathInput");
+  const pathInput = view.querySelector("#pathInput");
   if (pathInput) pathInput.addEventListener("change", (e) => (state.projectPath = e.target.value));
-  const schemeInput = app.querySelector("#schemeInput");
+  const schemeInput = view.querySelector("#schemeInput");
   if (schemeInput) {
     schemeInput.addEventListener("input", (e) => {
       state.scheme = e.target.value;
-      const btn = app.querySelector("#deployBtn");
+      const btn = view.querySelector("#deployBtn");
       if (btn) btn.disabled = state.busy || !state.scheme || !state.selectedRepo;
     });
   }
-  app.querySelectorAll("[data-mode]").forEach((btn) =>
+  view.querySelectorAll("[data-mode]").forEach((btn) =>
     btn.addEventListener("click", () => {
       state.deployMode = btn.getAttribute("data-mode") || "ota";
       render();
     }),
   );
-  app.querySelectorAll("[data-platform]").forEach((btn) =>
+  view.querySelectorAll("[data-platform]").forEach((btn) =>
     btn.addEventListener("click", () => {
       state.platform = btn.getAttribute("data-platform") || "ios";
       render();
     }),
   );
-  const engineSelect = app.querySelector("#engineSelect");
+  const engineSelect = view.querySelector("#engineSelect");
   if (engineSelect)
     engineSelect.addEventListener("change", (e) => (state.engine = e.target.value));
-  const deployBtn = app.querySelector("#deployBtn");
+  const deployBtn = view.querySelector("#deployBtn");
   if (deployBtn) deployBtn.addEventListener("click", deploy);
-  app.querySelectorAll(".pick-ios").forEach((btn) =>
+  view.querySelectorAll(".pick-ios").forEach((btn) =>
     btn.addEventListener("click", () => {
       state.projectPath = btn.getAttribute("data-path") || ".";
       state.scheme = btn.getAttribute("data-scheme") || state.scheme;
@@ -1218,29 +1200,29 @@ function render() {
     }),
   );
 
-  const toggleAdvanced = app.querySelector("#toggleAdvanced");
+  const toggleAdvanced = view.querySelector("#toggleAdvanced");
   if (toggleAdvanced)
     toggleAdvanced.addEventListener("click", () => {
       state.showAdvanced = !state.showAdvanced;
       render();
     });
-  const toggleLogs = app.querySelector("#toggleLogs");
+  const toggleLogs = view.querySelector("#toggleLogs");
   if (toggleLogs)
     toggleLogs.addEventListener("click", () => {
       state.showLogs = !state.showLogs;
       render();
     });
-  const toggleStatusMore = app.querySelector("#toggleStatusMore");
+  const toggleStatusMore = view.querySelector("#toggleStatusMore");
   if (toggleStatusMore)
     toggleStatusMore.addEventListener("click", () => {
       state.showStatusMore = !state.showStatusMore;
       render();
     });
 
-  const refreshAgents = app.querySelector("#refreshAgents");
+  const refreshAgents = view.querySelector("#refreshAgents");
   if (refreshAgents) refreshAgents.addEventListener("click", loadAgents);
 
-  const agentsQuery = app.querySelector("#agentsQuery");
+  const agentsQuery = view.querySelector("#agentsQuery");
   if (agentsQuery) {
     agentsQuery.addEventListener("input", (e) => {
       state.agentsQuery = e.target.value || "";
@@ -1259,7 +1241,7 @@ function render() {
       }
     });
   }
-  const agentsShowArchived = app.querySelector("#agentsShowArchived");
+  const agentsShowArchived = view.querySelector("#agentsShowArchived");
   if (agentsShowArchived) {
     agentsShowArchived.addEventListener("change", (e) => {
       state.agentsShowArchived = Boolean(e.target.checked);
@@ -1268,26 +1250,26 @@ function render() {
     });
   }
 
-  app.querySelectorAll("[data-agent]").forEach((btn) =>
+  view.querySelectorAll("[data-agent]").forEach((btn) =>
     btn.addEventListener("click", () => openAgent(btn.getAttribute("data-agent"))),
   );
-  const backAgents = app.querySelector("#backAgents");
+  const backAgents = view.querySelector("#backAgents");
   if (backAgents)
     backAgents.addEventListener("click", () => {
       state.agentDetail = null;
       state.openingAgentId = null;
       render();
     });
-  const deployAgentBtn = app.querySelector("#deployAgentBtn");
+  const deployAgentBtn = view.querySelector("#deployAgentBtn");
   if (deployAgentBtn) deployAgentBtn.addEventListener("click", deployFromAgent);
 
-  const refreshStatus = app.querySelector("#refreshStatus");
+  const refreshStatus = view.querySelector("#refreshStatus");
   if (refreshStatus) refreshStatus.addEventListener("click", loadStatus);
 
-  const saveApiToken = app.querySelector("#saveApiToken");
+  const saveApiToken = view.querySelector("#saveApiToken");
   if (saveApiToken) {
     saveApiToken.addEventListener("click", async () => {
-      const input = app.querySelector("#apiTokenInput");
+      const input = view.querySelector("#apiTokenInput");
       state.apiToken = (input?.value || "").trim();
       try {
         if (state.apiToken) localStorage.setItem(TOKEN_KEY, state.apiToken);
@@ -1300,6 +1282,63 @@ function render() {
       await bootstrap();
     });
   }
+}
+
+/** Stable identity for #view content; scroll is kept only across same-key renders. */
+let lastScrollViewKey = "";
+function scrollViewKey() {
+  if (state.tab === "cursor") {
+    if (state.openingAgentId || state.agentDetail) return "cursor:detail";
+    return "cursor:list";
+  }
+  return state.tab;
+}
+
+function render() {
+  renderShellOnce();
+
+  const body =
+    state.tab === "projects"
+      ? renderProjects()
+      : state.tab === "cursor"
+        ? renderCursor()
+        : renderStatus();
+
+  const statusLabel = state.busy
+    ? "building…"
+    : state.openingAgentId || state.agentsLoading
+      ? "loading…"
+      : setupMissing().length
+        ? "setup needed"
+        : "ready";
+
+  const pill = app.querySelector("#statusPill");
+  if (pill) {
+    pill.textContent = statusLabel;
+    pill.className = `pill ${
+      state.busy || state.openingAgentId || state.agentsLoading
+        ? "pill-busy"
+        : setupMissing().length
+          ? "pill-warn"
+          : "pill-ok"
+    }`;
+  }
+
+  app.querySelectorAll("nav.tabs [data-tab]").forEach((btn) => {
+    const tab = btn.getAttribute("data-tab");
+    const active = tab === state.tab;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-current", active ? "page" : "false");
+  });
+
+  const view = app.querySelector("#view");
+  if (!view) return;
+  const key = scrollViewKey();
+  const scrollTop = key === lastScrollViewKey ? view.scrollTop : 0;
+  view.innerHTML = body;
+  view.scrollTop = scrollTop;
+  lastScrollViewKey = key;
+  bindViewEvents(view);
 }
 
 function escapeHtml(s) {
