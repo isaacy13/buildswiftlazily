@@ -5,7 +5,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { createApp } from "../src/app.js";
 import { JobStore } from "../src/jobs.js";
-import { runLocalDeploy, injectCheckoutFiles } from "../src/localDeploy.js";
+import { runLocalDeploy, injectCheckoutFiles, runScript } from "../src/localDeploy.js";
 import type { Env } from "../src/config.js";
 
 function testEnv(overrides: Partial<Env> = {}): Env {
@@ -221,4 +221,38 @@ test("deploy rejects unsafe scheme", async () => {
     }),
   });
   assert.equal(res.status, 400);
+});
+
+test("runScript streams lines into the job log before exit", async () => {
+  const jobs = new JobStore();
+  const job = jobs.create({
+    engine: "local",
+    repository: "isaacy13/GuideAI",
+    ref: "main",
+    scheme: "GuideAI",
+    deployMode: "ota",
+  });
+  const script = path.join(os.tmpdir(), `bsl-stream-${Date.now()}.sh`);
+  fs.writeFileSync(
+    script,
+    "#!/bin/sh\necho phase-one\nsleep 0.4\necho phase-two\n",
+    { mode: 0o755 },
+  );
+  const running = runScript(job.id, jobs, script, []);
+  // Wait until first line is visible while process still running
+  let sawLive = false;
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    const logs = jobs.get(job.id)?.logs || [];
+    if (logs.some((l) => /phase-one/.test(l))) {
+      sawLive = true;
+      break;
+    }
+  }
+  assert.equal(sawLive, true, "expected phase-one in logs before script exit");
+  await running;
+  const finalLogs = jobs.get(job.id)?.logs || [];
+  assert.ok(finalLogs.some((l) => /phase-two/.test(l)));
+  assert.ok(finalLogs.some((l) => /finished OK/.test(l)));
+  fs.unlinkSync(script);
 });
