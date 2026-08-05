@@ -42,3 +42,36 @@ for line in sys.stdin:
             print(tid)
 ' 2>/dev/null || true
 }
+
+bsl_login_keychain_path() {
+  # Prefer the modern -db path; fall back to legacy name.
+  local home="${HOME:-}"
+  if [[ -f "$home/Library/Keychains/login.keychain-db" ]]; then
+    printf '%s\n' "$home/Library/Keychains/login.keychain-db"
+  elif [[ -f "$home/Library/Keychains/login.keychain" ]]; then
+    printf '%s\n' "$home/Library/Keychains/login.keychain"
+  else
+    # Default path even if not yet created — security will error clearly.
+    printf '%s\n' "$home/Library/Keychains/login.keychain-db"
+  fi
+}
+
+bsl_keychain_prepared_marker() {
+  printf '%s\n' "${BSL_KEYCHAIN_PREPARED_MARKER:-$HOME/.config/buildswiftlazily/keychain-prepared}"
+}
+
+# Unlock login keychain for unattended xcodebuild/codesign.
+# Uses BSL_KEYCHAIN_PASSWORD when set. No-ops (exit 0) when unset so interactive
+# GUI sessions that already hold an unlocked keychain keep working.
+bsl_unlock_keychain_for_build() {
+  local pass="${BSL_KEYCHAIN_PASSWORD:-}"
+  local keychain
+  keychain="$(bsl_login_keychain_path)"
+  if [[ -z "$pass" ]]; then
+    return 0
+  fi
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    return 0
+  fi
+  security unlock-keychain -p "$pass" "$keychain" >/dev/null
+}

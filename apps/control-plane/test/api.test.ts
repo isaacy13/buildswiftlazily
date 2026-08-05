@@ -61,6 +61,7 @@ test("GET /api/health and /api/setup", async () => {
   const s = await setup.json();
   assert.ok(Array.isArray(s.items));
   assert.ok(s.items.some((i: { id: string }) => i.id === "github"));
+  assert.ok(s.items.some((i: { id: string }) => i.id === "keychain"));
 });
 
 test("GET /api/repos without token returns pinned GuideAI", async () => {

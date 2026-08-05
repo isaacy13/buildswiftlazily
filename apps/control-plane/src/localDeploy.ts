@@ -401,11 +401,21 @@ export async function runLocalDeploy(
     });
     jobs.appendLog(jobId, "Deploy finished successfully");
   } catch (e) {
+    const raw = e instanceof Error ? e.message : String(e);
+    const blob = `${raw}\n${String((e as { stdout?: string; stderr?: string }).stdout || "")}\n${String((e as { stderr?: string }).stderr || "")}`;
+    let error = raw;
+    if (
+      /errSecInteractionNotAllowed|-25308|User interaction is not allowed|CSSMERR_DL_INVALID_ACCESS_CREDENTIALS|codesign.*keychain|failed to sign/i.test(
+        blob,
+      )
+    ) {
+      error = `${raw} — Keychain blocked unattended codesign. On the Mac run ./scripts/prepare-keychain.sh (optional: set BSL_KEYCHAIN_PASSWORD in .env). You cannot approve the Keychain dialog from the iPhone.`;
+    }
     jobs.patch(jobId, {
       status: "failed",
-      error: e instanceof Error ? e.message : String(e),
+      error,
       finishedAt: new Date().toISOString(),
     });
-    jobs.appendLog(jobId, `FAILED: ${e}`);
+    jobs.appendLog(jobId, `FAILED: ${error}`);
   }
 }

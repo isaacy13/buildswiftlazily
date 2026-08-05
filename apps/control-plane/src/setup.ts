@@ -97,6 +97,24 @@ export async function buildSetupChecklist(env: Env): Promise<{
     hint: "BSL_TEAM_ID helps automatic signing",
   });
 
+  let keychainPrepared = false;
+  if (isDarwin) {
+    const marker = path.join(
+      process.env.HOME || "",
+      ".config/buildswiftlazily/keychain-prepared",
+    );
+    keychainPrepared = Boolean(process.env.HOME) && fs.existsSync(marker);
+  }
+  items.push({
+    id: "keychain",
+    label: "Keychain prepared for unattended signing",
+    ok: !isDarwin || keychainPrepared,
+    required: false,
+    hint: isDarwin
+      ? "Run ./scripts/prepare-keychain.sh on the Mac so codesign doesn’t wait for a password dialog (can’t approve from iPhone)"
+      : undefined,
+  });
+
   items.push({
     id: "cursor",
     label: "Cursor API key (Cloud Agents tab)",

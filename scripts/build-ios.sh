@@ -47,6 +47,10 @@ done
 
 [[ -n "$ROOT" && -n "$SCHEME" && -n "$OUT_DIR" ]] || { usage; exit 2; }
 
+SCRIPT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib.sh
+source "$SCRIPT_ROOT/scripts/lib.sh"
+
 # Path safety: reject .. and absolute sneaking in project-path
 if [[ "$PROJECT_PATH" == *".."* ]]; then
   echo "Invalid project-path: $PROJECT_PATH" >&2
@@ -127,6 +131,12 @@ fi
 
 echo "Building archive…"
 # Prefer automatic signing updates on personal Mac runner
+if [[ "$DRY_RUN" != "1" ]]; then
+  if ! bsl_unlock_keychain_for_build; then
+    echo "Warning: could not unlock login keychain (BSL_KEYCHAIN_PASSWORD wrong?)." >&2
+    echo "Run ./scripts/prepare-keychain.sh on the Mac, or unlock Keychain Access once." >&2
+  fi
+fi
 ARCHIVE_CMD=( xcodebuild "${XCODE_ARGS[@]}" -allowProvisioningUpdates clean archive )
 if [[ -n "$TEAM_ID" ]]; then
   ARCHIVE_CMD+=( DEVELOPMENT_TEAM="$TEAM_ID" )

@@ -73,6 +73,28 @@ You may keep an existing Distribution cert if it already appears under My Certif
 
 **Settings → General → VPN & Device Management** → trust the developer cert if prompted.
 
+### 1e. Unattended signing (couch builds — no Keychain password dialogs)
+
+macOS will often prompt **“codesign wants to use … in your keychain”** the first times you sign. **There is no Apple API to approve that dialog from your iPhone** (and remote-desktop “clicks” are often blocked on purpose).
+
+Do this **once on the Mac** so builds started from the PWA never wait on you:
+
+```bash
+./scripts/prepare-keychain.sh
+```
+
+That unlocks the login keychain, extends the lock timeout, and runs `security set-key-partition-list` so Apple’s `codesign` / xcodebuild tools may use signing keys without a GUI prompt.
+
+Optional — so builds still work after the Mac sleeps and the keychain re-locks — add to `.env` (`chmod 600`):
+
+```bash
+BSL_KEYCHAIN_PASSWORD='your-login-keychain-password'
+```
+
+`build-ios.sh` unlocks before archive when that variable is set. Doctor and the PWA Setup checklist show whether prepare has been run (`~/.config/buildswiftlazily/keychain-prepared`).
+
+If a dialog still appears **once** after prepare, click **Always Allow** with a keyboard/mouse attached to the Mac (not a synthetic remote click). After that, phone-triggered builds should stay unattended.
+
 ### Common signing failures
 
 | Symptom | Cause / fix |
@@ -81,6 +103,8 @@ You may keep an existing Distribution cert if it already appears under My Certif
 | Cert installs but won’t sign | `.cer` without private key → CSR must be from this Mac |
 | IPA installs, app won’t open | UDID not in the **current** Ad Hoc profile → add device, regenerate/refresh profile, rebuild |
 | `No signing certificate` / export fail | Sign into Xcode Accounts; set `BSL_TEAM_ID`; ensure Distribution identity in keychain |
+| Keychain password / “codesign wants to…” while you’re on the couch | §1e — `./scripts/prepare-keychain.sh` (+ optional `BSL_KEYCHAIN_PASSWORD`) |
+| `errSecInteractionNotAllowed` / `-25308` / User interaction is not allowed | Keychain locked or ACL not prepared → §1e |
 
 ## 2. Tailscale (Mac + iPhone)
 

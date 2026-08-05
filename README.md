@@ -87,6 +87,7 @@ Full checklist (Apple Distribution vs Ad Hoc, UDID, TestFlight, runner): **[docs
 | `BSL_TS_HOST` | MagicDNS name of the Mac (no `https://`) |
 | `BSL_API_TOKEN` | Required API auth; bootstrap generates one |
 | `BSL_TEAM_ID` | 10-char Apple Team ID for signing |
+| `BSL_KEYCHAIN_PASSWORD` | Optional; unlocks login keychain after sleep for unattended codesign ([docs/SETUP.md](docs/SETUP.md) §1e) |
 | `GITHUB_TOKEN` | Contents read (+ Actions write if dispatching) |
 | `BSL_DEPLOY_ENGINE` | `local` (default) or `actions` |
 | `BSL_TOOLING_REPO` / `BSL_TOOLING_REF` | Where `deploy-ios.yml` lives (Actions engine only) |
