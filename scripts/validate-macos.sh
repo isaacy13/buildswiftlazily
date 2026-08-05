@@ -73,6 +73,7 @@ fi
 
 out=$(BSL_DRY_RUN=1 "$ROOT/scripts/upload-testflight.sh" --ipa "$OUT/App.ipa" --dry-run)
 echo "$out" | grep -q TESTFLIGHT_UPLOAD && pass "upload-testflight dry-run" || bad "upload-testflight dry-run"
+echo "$out" | grep -q 'upload-package' && pass "upload-testflight prefers upload-package" || bad "upload-package missing in dry-run"
 
 mkdir -p "$TMP/Demo.app"
 echo '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.demo</string></dict></plist>' > "$TMP/Demo.app/Info.plist"

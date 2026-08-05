@@ -471,7 +471,8 @@ function renderJobCard() {
     ${
       job.testflightNote
         ? `<p class="success">${escapeHtml(job.testflightNote)}</p>
-           <a class="secondary block" href="itms-beta://" style="margin-top:0.5rem">Open TestFlight</a>`
+           <a class="secondary block" href="https://appstoreconnect.apple.com/apps" target="_blank" rel="noopener" style="margin-top:0.5rem">Open App Store Connect</a>
+           <a class="secondary block" href="itms-beta://" style="margin-top:0.5rem">Open TestFlight app</a>`
         : ""
     }
     ${job.error ? `<p class="error">${escapeHtml(job.error)}</p>` : ""}
@@ -563,8 +564,8 @@ function renderProjects() {
     both: "OTA page plus direct install if paired.",
     testflight:
       state.platform === "watchos"
-        ? "Upload for TestFlight. Watch-only apps usually need an iOS container scheme."
-        : "Upload to TestFlight for installs anywhere.",
+        ? "Upload for TestFlight. Watch-only apps usually need an iOS container scheme. Check ASC Builds after upload — processing can take a while."
+        : "Upload to App Store Connect. Watch status in ASC → TestFlight → Builds (phone app hides Processing).",
   };
   const watchOtaWarn =
     state.platform === "watchos" &&

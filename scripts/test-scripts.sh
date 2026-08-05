@@ -22,6 +22,7 @@ echo "$out2b" | grep -q 'platform=watchos'
 echo fake > "$OUT/App.ipa"
 out3=$(BSL_DRY_RUN=1 "$ROOT/scripts/upload-testflight.sh" --ipa "$OUT/App.ipa" --dry-run)
 echo "$out3" | grep -q TESTFLIGHT_UPLOAD
+echo "$out3" | grep -q 'upload-package'
 
 out4=$(BSL_DRY_RUN=1 "$ROOT/scripts/serve-ota.sh" --ipa "$OUT/App.ipa" --artifact-id scripttest1 --title Demo --bundle-id com.demo --ts-host x.ts.net --dry-run)
 echo "$out4" | grep -q INSTALL_URL

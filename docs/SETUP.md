@@ -195,8 +195,14 @@ App Store signing + ASC API (not Ad Hoc).
 1. [App Store Connect API keys](https://appstoreconnect.apple.com/access/integrations/api) → generate (App Manager) → download `.p8` once.
 2. `.env`: `BSL_ASC_KEY_ID`, `BSL_ASC_ISSUER_ID`.
 3. `mkdir -p ~/.appstoreconnect/private_keys && mv AuthKey_XXX.p8 ~/.appstoreconnect/private_keys/`
+4. Ensure GuideAI (or your app) already exists in App Store Connect with a matching bundle id.
+5. Bump **CFBundleVersion** (build number) before each upload — duplicates are rejected.
 
-PWA → install method **TestFlight**. Processing often takes a few minutes.
+PWA → install method **TestFlight** → Build & upload.
+
+**After upload:** check [App Store Connect → TestFlight → Builds](https://appstoreconnect.apple.com/apps) — not only the TestFlight iPhone app. Status goes Processing → Ready to Test (usually minutes; sometimes longer). Answer **Export Compliance** if ASC asks, or the build can sit for hours.
+
+**Do not Ctrl+C** the Mac terminal that is running `./scripts/start.sh` / the control plane during upload — that aborts `altool` mid-transfer. Leave the Mac awake until the job log shows `TESTFLIGHT_UPLOAD=ok`.
 
 ## 6. Doctor
 
@@ -240,6 +246,10 @@ launchctl load ~/Library/LaunchAgents/com.buildswiftlazily.control.plist
 | `devicectl` finds nothing | Pair USB/Wi‑Fi or use OTA |
 | Actions 404 | `deploy-ios.yml` on `BSL_TOOLING_REF`, or use local engine |
 | `Could not get GOOGLE_APP_ID` / ARCHIVE FAILED | Gitignored `GoogleService-Info.plist` missing from tarball — set `BSL_CHECKOUT_INJECT` (see `config/env.example`) |
+| TestFlight empty after “upload” | Confirm job log has `TESTFLIGHT_UPLOAD=ok`. Check **ASC → TestFlight → Builds**, not only the phone app. Ctrl+C on the Mac shell aborts upload. |
+| ASC build stuck Processing / Missing Compliance | Answer Export Compliance in App Store Connect; wait out processing (can exceed 1h). |
+| altool auth / missing AuthKey | `AuthKey_<BSL_ASC_KEY_ID>.p8` under `~/.appstoreconnect/private_keys/`; key needs App Manager+ |
+| Duplicate build rejected | Bump CFBundleVersion, rebuild, upload again |
 
 ## Next
 

@@ -10,7 +10,7 @@ buildswiftlazily is a **single-operator** Mac-hosted control plane plus shell sc
 | `scripts/build-ios.sh` | `xcodebuild` archive + export for **iOS or watchOS** (`--platform`). |
 | `scripts/serve-ota.sh` | Copy IPA + write `manifest.plist` / install HTML under the artifact www root; ensure Tailscale Serve. |
 | `scripts/serve-control.sh` | Point `tailscale serve` at the control plane port. |
-| `scripts/upload-testflight.sh` | `xcrun altool` upload with App Store Connect API key. |
+| `scripts/upload-testflight.sh` | Validate + upload App Store IPA via `altool` (`--upload-package`, ASC API key). |
 | `scripts/install-direct.sh` | `devicectl` install/launch on a paired **iPhone or Apple Watch**. |
 | `scripts/prepare-keychain.sh` | One-time unattended codesign Keychain prep. |
 | `scripts/bootstrap.sh` / `start.sh` / `doctor.sh` | First-run, launch, and host checks. |

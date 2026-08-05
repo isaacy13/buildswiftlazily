@@ -412,14 +412,26 @@ export async function runLocalDeploy(
       const ipa = path.join(outDir, "App.ipa");
       if (dry) fs.writeFileSync(ipa, "dry-run-ipa");
       if (!fs.existsSync(ipa)) throw new Error("IPA missing after build");
-      const tfArgs = ["--ipa", ipa];
+      let bver = "";
+      if (fs.existsSync(path.join(outDir, "bundle_version.txt"))) {
+        bver = fs.readFileSync(path.join(outDir, "bundle_version.txt"), "utf8").trim();
+      }
+      if (bver) jobs.appendLog(jobId, `CFBundleVersion=${bver} (must be unique per upload)`);
+      const tfArgs = ["--ipa", ipa, "--platform", platform];
       if (dry) tfArgs.push("--dry-run");
-      await runScript(jobId, jobs, path.join(REPO_ROOT, "scripts/upload-testflight.sh"), tfArgs);
+      const tf = await runScript(
+        jobId,
+        jobs,
+        path.join(REPO_ROOT, "scripts/upload-testflight.sh"),
+        tfArgs,
+      );
+      const uploaded = /TESTFLIGHT_UPLOAD=ok/.test(`${tf.stdout}\n${tf.stderr}`);
       jobs.patch(jobId, {
-        testflightNote:
-          dry
-            ? "DRY_RUN: would upload to App Store Connect / TestFlight."
-            : "Uploaded to App Store Connect. Processing can take a few minutes — open TestFlight.",
+        testflightNote: dry
+          ? "DRY_RUN: would upload to App Store Connect / TestFlight."
+          : uploaded
+            ? "Upload accepted. Check App Store Connect → TestFlight → Builds (not only the phone app). Processing is often minutes; Missing Compliance can stall for hours."
+            : "Upload finished without TESTFLIGHT_UPLOAD=ok — check the log. If you Ctrl+C’d the Mac shell, re-run; the upload was likely aborted.",
       });
     }
 
@@ -438,6 +450,12 @@ export async function runLocalDeploy(
       )
     ) {
       error = `${raw} — Keychain blocked unattended codesign. On the Mac run ./scripts/prepare-keychain.sh (optional: set BSL_KEYCHAIN_PASSWORD in .env). You cannot approve the Keychain dialog from the iPhone.`;
+    } else if (
+      /Unable to authenticate|AuthKey_|BSL_ASC_KEY|ASC API auth|TESTFLIGHT|altool|No suitable application records|duplicate|CFBundleVersion/i.test(
+        blob,
+      )
+    ) {
+      error = `${raw} — TestFlight/ASC upload issue. Confirm BSL_ASC_KEY_ID + ISSUER_ID, AuthKey_*.p8, a unique CFBundleVersion, and an ASC app record for this bundle id. Do not Ctrl+C the Mac control-plane shell mid-upload.`;
     }
     jobs.patch(jobId, {
       status: "failed",
