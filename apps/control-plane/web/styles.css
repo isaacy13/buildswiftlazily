@@ -45,40 +45,72 @@
 
 html {
   height: 100%;
+  height: 100dvh;
+  height: 100svh;
   background: var(--bg);
+  /* Prevent the document itself from scrolling — the shell scrolls inside #view */
+  overflow: hidden;
 }
 
 body {
   margin: 0;
-  min-height: 100%;
-  min-height: 100dvh;
-  min-height: -webkit-fill-available;
+  height: 100%;
+  height: 100dvh;
+  height: 100svh;
+  max-height: 100%;
+  max-height: 100dvh;
+  max-height: 100svh;
   background:
     radial-gradient(120% 80% at 50% -20%, rgba(10, 132, 255, 0.12), transparent 55%),
     radial-gradient(80% 50% at 100% 100%, rgba(48, 209, 88, 0.05), transparent 45%),
     var(--bg);
   color: var(--text);
   line-height: 1.45;
-  overflow-x: hidden;
+  overflow: hidden;
   overscroll-behavior-y: none;
   -webkit-tap-highlight-color: transparent;
 }
 
+/*
+ * App shell: header + scrollable main + in-flow tab bar.
+ * Avoids position:fixed bottom nav, which iOS Safari often leaves mid-viewport
+ * after innerHTML re-renders / visual-viewport chrome changes.
+ */
 #app {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   max-width: var(--content-max);
+  height: 100%;
+  height: 100dvh;
+  height: 100svh;
+  max-height: 100%;
+  max-height: 100dvh;
+  max-height: 100svh;
   margin: 0 auto;
-  min-height: 100dvh;
   padding:
     calc(var(--safe-top) + 0.85rem)
     calc(1rem + var(--safe-right))
-    calc(var(--tab-h) + var(--safe-bottom) + 1.25rem)
+    0
     calc(1rem + var(--safe-left));
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+#view {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  padding-bottom: 1.25rem;
 }
 
 /* ——— Header ——— */
 header.appbar {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
@@ -119,16 +151,18 @@ header .pill {
   white-space: nowrap;
 }
 
-/* ——— Bottom tab bar (flush to screen edge) ——— */
+/* ——— Bottom tab bar (in-flow, flush to shell edge) ——— */
 .tabs {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  position: relative;
+  flex-shrink: 0;
   z-index: 40;
   display: flex;
   justify-content: center;
   gap: 0.15rem;
+  /* Bleed to the true screen edges (cancel #app horizontal padding) */
+  width: calc(100% + 1rem + var(--safe-left) + 1rem + var(--safe-right));
+  margin-left: calc(-1rem - var(--safe-left));
+  margin-right: calc(-1rem - var(--safe-right));
   min-height: calc(var(--tab-h) + var(--safe-bottom));
   padding:
     0.35rem
@@ -136,7 +170,7 @@ header .pill {
     0
     max(0.5rem, var(--safe-left));
   /* Opaque fill into the home-indicator area — no gap */
-  padding-bottom: var(--safe-bottom);
+  padding-bottom: max(var(--safe-bottom), env(safe-area-inset-bottom, 0px));
   background: var(--tab-bg);
   border-top: 1px solid var(--border);
   /* Kill any subpixel / compositor gap below the bar */
@@ -859,6 +893,9 @@ header .pill-busy {
 
   #app {
     padding-top: calc(var(--safe-top) + 1.5rem);
+  }
+
+  #view {
     padding-bottom: calc(var(--tab-h) + 2.75rem + var(--safe-bottom));
   }
 
@@ -866,12 +903,16 @@ header .pill-busy {
     font-size: 1.55rem;
   }
 
+  /* Floating dock — fixed is fine on desktop; mobile stays in-flow */
   .tabs {
+    position: fixed;
     left: 50%;
     right: auto;
     bottom: calc(1rem + var(--safe-bottom));
     transform: translateX(-50%);
     width: min(24rem, calc(100% - 2rem));
+    max-width: min(24rem, calc(100% - 2rem));
+    margin: 0;
     min-height: var(--tab-h);
     padding: 0.35rem;
     padding-bottom: 0.35rem;
@@ -902,6 +943,12 @@ header .pill-busy {
     padding-right: calc(0.75rem + var(--safe-right));
   }
 
+  .tabs {
+    width: calc(100% + 0.75rem + var(--safe-left) + 0.75rem + var(--safe-right));
+    margin-left: calc(-0.75rem - var(--safe-left));
+    margin-right: calc(-0.75rem - var(--safe-right));
+  }
+
   header h1 {
     font-size: 1.15rem;
   }
@@ -920,13 +967,7 @@ header .pill-busy {
   }
 }
 
-/* Standalone PWA: ensure flush edges */
-@media (display-mode: standalone) {
-  .tabs {
-    bottom: 0;
-  }
-}
-
+/* Standalone PWA: keep mobile bar flush; desktop dock unchanged */
 @media (min-width: 720px) and (display-mode: standalone) {
   .tabs {
     bottom: calc(1rem + var(--safe-bottom));

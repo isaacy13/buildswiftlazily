@@ -875,7 +875,155 @@ function renderStatus() {
   `;
 }
 
+function renderShellOnce() {
+  if (app.querySelector("nav.tabs") && app.querySelector("#view")) return;
+
+  app.innerHTML = `
+    <header class="appbar">
+      <div class="brand">
+        <h1>buildswiftlazily</h1>
+        <span class="tagline">couch → phone</span>
+      </div>
+      <div class="pill" id="statusPill">…</div>
+    </header>
+    <main id="view"></main>
+    <nav class="tabs" aria-label="Primary">
+      <button type="button" data-tab="projects" aria-current="false">
+        ${TAB_ICONS.projects}<span>Build</span>
+      </button>
+      <button type="button" data-tab="cursor" aria-current="false">
+        ${TAB_ICONS.cursor}<span>Agents</span>
+      </button>
+      <button type="button" data-tab="status" aria-current="false">
+        ${TAB_ICONS.status}<span>Setup</span>
+      </button>
+    </nav>
+  `;
+
+  app.querySelectorAll("[data-tab]").forEach((btn) =>
+    btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab"))),
+  );
+}
+
+function bindViewEvents(view) {
+  view.querySelectorAll("[data-tab-jump]").forEach((btn) =>
+    btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab-jump"))),
+  );
+
+  const repoSelect = view.querySelector("#repoSelect");
+  if (repoSelect) {
+    repoSelect.addEventListener("change", async (e) => {
+      const full = e.target.value;
+      const meta = state.repos.find((r) => r.full_name === full);
+      await selectRepo(full, meta?.default_branch, meta);
+    });
+  }
+  const branchSelect = view.querySelector("#branchSelect");
+  if (branchSelect) {
+    branchSelect.addEventListener("change", async (e) => {
+      state.selectedRef = e.target.value;
+      try {
+        await refreshIos();
+      } catch (err) {
+        state.error = String(err.message || err);
+      }
+      render();
+    });
+  }
+  const pathInput = view.querySelector("#pathInput");
+  if (pathInput) pathInput.addEventListener("change", (e) => (state.projectPath = e.target.value));
+  const schemeInput = view.querySelector("#schemeInput");
+  if (schemeInput) {
+    schemeInput.addEventListener("input", (e) => {
+      state.scheme = e.target.value;
+      const btn = view.querySelector("#deployBtn");
+      if (btn) btn.disabled = state.busy || !state.scheme || !state.selectedRepo;
+    });
+  }
+  view.querySelectorAll("[data-mode]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      state.deployMode = btn.getAttribute("data-mode") || "ota";
+      render();
+    }),
+  );
+  view.querySelectorAll("[data-platform]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      state.platform = btn.getAttribute("data-platform") || "ios";
+      render();
+    }),
+  );
+  const engineSelect = view.querySelector("#engineSelect");
+  if (engineSelect)
+    engineSelect.addEventListener("change", (e) => (state.engine = e.target.value));
+  const deployBtn = view.querySelector("#deployBtn");
+  if (deployBtn) deployBtn.addEventListener("click", deploy);
+  view.querySelectorAll(".pick-ios").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      state.projectPath = btn.getAttribute("data-path") || ".";
+      state.scheme = btn.getAttribute("data-scheme") || state.scheme;
+      const pl = btn.getAttribute("data-platform");
+      if (pl === "ios" || pl === "watchos") state.platform = pl;
+      render();
+    }),
+  );
+
+  const toggleAdvanced = view.querySelector("#toggleAdvanced");
+  if (toggleAdvanced)
+    toggleAdvanced.addEventListener("click", () => {
+      state.showAdvanced = !state.showAdvanced;
+      render();
+    });
+  const toggleLogs = view.querySelector("#toggleLogs");
+  if (toggleLogs)
+    toggleLogs.addEventListener("click", () => {
+      state.showLogs = !state.showLogs;
+      render();
+    });
+  const toggleStatusMore = view.querySelector("#toggleStatusMore");
+  if (toggleStatusMore)
+    toggleStatusMore.addEventListener("click", () => {
+      state.showStatusMore = !state.showStatusMore;
+      render();
+    });
+
+  const refreshAgents = view.querySelector("#refreshAgents");
+  if (refreshAgents) refreshAgents.addEventListener("click", loadAgents);
+  view.querySelectorAll("[data-agent]").forEach((btn) =>
+    btn.addEventListener("click", () => openAgent(btn.getAttribute("data-agent"))),
+  );
+  const backAgents = view.querySelector("#backAgents");
+  if (backAgents)
+    backAgents.addEventListener("click", () => {
+      state.agentDetail = null;
+      render();
+    });
+  const deployAgentBtn = view.querySelector("#deployAgentBtn");
+  if (deployAgentBtn) deployAgentBtn.addEventListener("click", deployFromAgent);
+
+  const refreshStatus = view.querySelector("#refreshStatus");
+  if (refreshStatus) refreshStatus.addEventListener("click", loadStatus);
+
+  const saveApiToken = view.querySelector("#saveApiToken");
+  if (saveApiToken) {
+    saveApiToken.addEventListener("click", async () => {
+      const input = view.querySelector("#apiTokenInput");
+      state.apiToken = (input?.value || "").trim();
+      try {
+        if (state.apiToken) localStorage.setItem(TOKEN_KEY, state.apiToken);
+        else localStorage.removeItem(TOKEN_KEY);
+      } catch {
+        /* ignore */
+      }
+      state.message = "API token saved on this device";
+      state.error = "";
+      await bootstrap();
+    });
+  }
+}
+
 function render() {
+  renderShellOnce();
+
   const body =
     state.tab === "projects"
       ? renderProjects()
@@ -889,144 +1037,25 @@ function render() {
       ? "setup needed"
       : "ready";
 
-  app.innerHTML = `
-    <header class="appbar">
-      <div class="brand">
-        <h1>buildswiftlazily</h1>
-        <span class="tagline">couch → phone</span>
-      </div>
-      <div class="pill ${state.busy ? "pill-busy" : setupMissing().length ? "pill-warn" : "pill-ok"}">${statusLabel}</div>
-    </header>
-    <main id="view">${body}</main>
-    <nav class="tabs" aria-label="Primary">
-      <button type="button" class="${state.tab === "projects" ? "active" : ""}" data-tab="projects" aria-current="${state.tab === "projects" ? "page" : "false"}">
-        ${TAB_ICONS.projects}<span>Build</span>
-      </button>
-      <button type="button" class="${state.tab === "cursor" ? "active" : ""}" data-tab="cursor" aria-current="${state.tab === "cursor" ? "page" : "false"}">
-        ${TAB_ICONS.cursor}<span>Agents</span>
-      </button>
-      <button type="button" class="${state.tab === "status" ? "active" : ""}" data-tab="status" aria-current="${state.tab === "status" ? "page" : "false"}">
-        ${TAB_ICONS.status}<span>Setup</span>
-      </button>
-    </nav>
-  `;
-
-  app.querySelectorAll("[data-tab]").forEach((btn) =>
-    btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab"))),
-  );
-  app.querySelectorAll("[data-tab-jump]").forEach((btn) =>
-    btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab-jump"))),
-  );
-
-  const repoSelect = app.querySelector("#repoSelect");
-  if (repoSelect) {
-    repoSelect.addEventListener("change", async (e) => {
-      const full = e.target.value;
-      const meta = state.repos.find((r) => r.full_name === full);
-      await selectRepo(full, meta?.default_branch, meta);
-    });
+  const pill = app.querySelector("#statusPill");
+  if (pill) {
+    pill.textContent = statusLabel;
+    pill.className = `pill ${
+      state.busy ? "pill-busy" : setupMissing().length ? "pill-warn" : "pill-ok"
+    }`;
   }
-  const branchSelect = app.querySelector("#branchSelect");
-  if (branchSelect) {
-    branchSelect.addEventListener("change", async (e) => {
-      state.selectedRef = e.target.value;
-      try {
-        await refreshIos();
-      } catch (err) {
-        state.error = String(err.message || err);
-      }
-      render();
-    });
-  }
-  const pathInput = app.querySelector("#pathInput");
-  if (pathInput) pathInput.addEventListener("change", (e) => (state.projectPath = e.target.value));
-  const schemeInput = app.querySelector("#schemeInput");
-  if (schemeInput) {
-    schemeInput.addEventListener("input", (e) => {
-      state.scheme = e.target.value;
-      const btn = app.querySelector("#deployBtn");
-      if (btn) btn.disabled = state.busy || !state.scheme || !state.selectedRepo;
-    });
-  }
-  app.querySelectorAll("[data-mode]").forEach((btn) =>
-    btn.addEventListener("click", () => {
-      state.deployMode = btn.getAttribute("data-mode") || "ota";
-      render();
-    }),
-  );
-  app.querySelectorAll("[data-platform]").forEach((btn) =>
-    btn.addEventListener("click", () => {
-      state.platform = btn.getAttribute("data-platform") || "ios";
-      render();
-    }),
-  );
-  const engineSelect = app.querySelector("#engineSelect");
-  if (engineSelect)
-    engineSelect.addEventListener("change", (e) => (state.engine = e.target.value));
-  const deployBtn = app.querySelector("#deployBtn");
-  if (deployBtn) deployBtn.addEventListener("click", deploy);
-  app.querySelectorAll(".pick-ios").forEach((btn) =>
-    btn.addEventListener("click", () => {
-      state.projectPath = btn.getAttribute("data-path") || ".";
-      state.scheme = btn.getAttribute("data-scheme") || state.scheme;
-      const pl = btn.getAttribute("data-platform");
-      if (pl === "ios" || pl === "watchos") state.platform = pl;
-      render();
-    }),
-  );
 
-  const toggleAdvanced = app.querySelector("#toggleAdvanced");
-  if (toggleAdvanced)
-    toggleAdvanced.addEventListener("click", () => {
-      state.showAdvanced = !state.showAdvanced;
-      render();
-    });
-  const toggleLogs = app.querySelector("#toggleLogs");
-  if (toggleLogs)
-    toggleLogs.addEventListener("click", () => {
-      state.showLogs = !state.showLogs;
-      render();
-    });
-  const toggleStatusMore = app.querySelector("#toggleStatusMore");
-  if (toggleStatusMore)
-    toggleStatusMore.addEventListener("click", () => {
-      state.showStatusMore = !state.showStatusMore;
-      render();
-    });
+  app.querySelectorAll("nav.tabs [data-tab]").forEach((btn) => {
+    const tab = btn.getAttribute("data-tab");
+    const active = tab === state.tab;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-current", active ? "page" : "false");
+  });
 
-  const refreshAgents = app.querySelector("#refreshAgents");
-  if (refreshAgents) refreshAgents.addEventListener("click", loadAgents);
-  app.querySelectorAll("[data-agent]").forEach((btn) =>
-    btn.addEventListener("click", () => openAgent(btn.getAttribute("data-agent"))),
-  );
-  const backAgents = app.querySelector("#backAgents");
-  if (backAgents)
-    backAgents.addEventListener("click", () => {
-      state.agentDetail = null;
-      render();
-    });
-  const deployAgentBtn = app.querySelector("#deployAgentBtn");
-  if (deployAgentBtn) deployAgentBtn.addEventListener("click", deployFromAgent);
-
-  const refreshStatus = app.querySelector("#refreshStatus");
-  if (refreshStatus) refreshStatus.addEventListener("click", loadStatus);
-
-  const saveApiToken = app.querySelector("#saveApiToken");
-  if (saveApiToken) {
-    saveApiToken.addEventListener("click", async () => {
-      const input = app.querySelector("#apiTokenInput");
-      state.apiToken = (input?.value || "").trim();
-      try {
-        if (state.apiToken) localStorage.setItem(TOKEN_KEY, state.apiToken);
-        else localStorage.removeItem(TOKEN_KEY);
-      } catch {
-        /* ignore */
-      }
-      state.message = "API token saved on this device";
-      state.error = "";
-      await bootstrap();
-    });
-  }
+  const view = app.querySelector("#view");
+  if (!view) return;
+  view.innerHTML = body;
+  bindViewEvents(view);
 }
 
 function escapeHtml(s) {
