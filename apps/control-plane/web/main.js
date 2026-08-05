@@ -1,5 +1,7 @@
 const TOKEN_KEY = "bsl_api_token";
 const ACTIVE_JOB_KEY = "bsl_active_job_id";
+const AGENTS_QUERY_KEY = "bsl_agents_query";
+const AGENTS_SHOW_ARCHIVED_KEY = "bsl_agents_show_archived";
 
 const state = {
   tab: "projects",
@@ -17,6 +19,10 @@ const state = {
   platform: "ios",
   agents: [],
   agentDetail: null,
+  agentsLoading: false,
+  openingAgentId: null,
+  agentsQuery: "",
+  agentsShowArchived: false,
   deploys: [],
   artifacts: [],
   devices: null,
@@ -39,8 +45,23 @@ const app = document.getElementById("app");
 
 try {
   state.apiToken = localStorage.getItem(TOKEN_KEY) || "";
+  state.agentsQuery = localStorage.getItem(AGENTS_QUERY_KEY) || "";
+  state.agentsShowArchived = localStorage.getItem(AGENTS_SHOW_ARCHIVED_KEY) === "1";
 } catch {
   state.apiToken = "";
+}
+
+function persistAgentsFilters() {
+  try {
+    if (state.agentsQuery) localStorage.setItem(AGENTS_QUERY_KEY, state.agentsQuery);
+    else localStorage.removeItem(AGENTS_QUERY_KEY);
+    localStorage.setItem(
+      AGENTS_SHOW_ARCHIVED_KEY,
+      state.agentsShowArchived ? "1" : "0",
+    );
+  } catch {
+    /* ignore */
+  }
 }
 
 function rememberActiveJobId(id) {
@@ -320,6 +341,9 @@ async function deploy() {
 }
 
 async function loadAgents() {
+  state.agentsLoading = true;
+  state.error = "";
+  render();
   try {
     const data = await api("/api/cursor/agents");
     state.agents = data.agents || [];
@@ -327,22 +351,55 @@ async function loadAgents() {
     if (data.error) state.error = data.error;
   } catch (e) {
     state.error = String(e.message || e);
+  } finally {
+    state.agentsLoading = false;
+    render();
   }
-  render();
 }
 
 async function openAgent(id) {
+  if (!id || state.openingAgentId) return;
   state.agentDetail = null;
-  state.busy = true;
+  state.openingAgentId = id;
+  state.error = "";
   render();
   try {
-    state.agentDetail = await api(`/api/cursor/agents/${encodeURIComponent(id)}`);
+    const detail = await api(`/api/cursor/agents/${encodeURIComponent(id)}`);
+    if (state.openingAgentId !== id) return; // user cancelled / navigated away
+    state.agentDetail = detail;
   } catch (e) {
+    if (state.openingAgentId !== id) return;
     state.error = String(e.message || e);
   } finally {
-    state.busy = false;
+    if (state.openingAgentId === id) state.openingAgentId = null;
     render();
   }
+}
+
+function isArchivedAgent(a) {
+  return Boolean(a?.archived) || /archiv/i.test(String(a?.status || ""));
+}
+
+function filteredAgents() {
+  const q = state.agentsQuery.trim().toLowerCase();
+  return (state.agents || []).filter((a) => {
+    if (!state.agentsShowArchived && isArchivedAgent(a)) return false;
+    if (!q) return true;
+    const hay = `${a.name || ""} ${a.status || ""} ${(a.branches || [])
+      .map((b) => `${b.branch || ""} ${b.repoUrl || ""}`)
+      .join(" ")}`.toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+function agentStatusBadge(a) {
+  if (isArchivedAgent(a)) return `<span class="badge">archived</span>`;
+  const s = String(a.status || "").toLowerCase();
+  if (/run|progress|busy/i.test(s)) return `<span class="badge run">${escapeHtml(a.status)}</span>`;
+  if (/fail|error/i.test(s)) return `<span class="badge err">${escapeHtml(a.status)}</span>`;
+  if (/done|finish|complete|success|idle|ready/i.test(s))
+    return `<span class="badge ok">${escapeHtml(a.status)}</span>`;
+  return a.status ? `<span class="badge">${escapeHtml(a.status)}</span>` : "";
 }
 
 async function deployFromAgent() {
@@ -709,6 +766,26 @@ function renderProjects() {
 }
 
 function renderCursor() {
+  if (state.openingAgentId) {
+    const pending =
+      state.agents.find((a) => a.id === state.openingAgentId) || null;
+    const title = pending?.name || "Agent";
+    return `
+      <div class="card">
+        <button class="text-btn" id="backAgents" type="button">← Cancel</button>
+        <div class="loading-panel" role="status" aria-live="polite">
+          <div class="spinner" aria-hidden="true"></div>
+          <div>
+            <h2 style="margin:0">${escapeHtml(title)}</h2>
+            <p class="muted lead" style="margin:0.35rem 0 0">Opening agent…</p>
+          </div>
+        </div>
+        <div class="skeleton-block" aria-hidden="true"></div>
+        <div class="skeleton-block short" aria-hidden="true"></div>
+      </div>
+    `;
+  }
+
   if (state.agentDetail) {
     const d = state.agentDetail;
     const userMsgs = (d.userMessages || []).slice().reverse().slice(0, 6);
@@ -717,7 +794,9 @@ function renderCursor() {
       <div class="card">
         <button class="text-btn" id="backAgents" type="button">← All agents</button>
         <h2 style="margin-top:0.5rem">${escapeHtml(d.agent.name)}</h2>
-        <p class="muted lead">${escapeHtml(d.agent.status || "")} · ${escapeHtml(fmtTime(d.agent.updatedAt))}</p>
+        <p class="muted lead">${escapeHtml(d.agent.status || "")}${
+          d.agent.archived || isArchivedAgent(d.agent) ? " · archived" : ""
+        } · ${escapeHtml(fmtTime(d.agent.updatedAt))}</p>
         ${
           branch
             ? `<p class="summary-line"><strong>${escapeHtml(branch.branch || "")}</strong>
@@ -744,6 +823,11 @@ function renderCursor() {
     `;
   }
 
+  const filtered = filteredAgents();
+  const archivedCount = (state.agents || []).filter(isArchivedAgent).length;
+  const hiddenByFilter =
+    (state.agents || []).length - filtered.length;
+
   return `
     <div class="card">
       <div class="row" style="justify-content:space-between;align-items:flex-start">
@@ -751,26 +835,67 @@ function renderCursor() {
           <h2>Agents</h2>
           <p class="muted lead" style="margin-bottom:0">Pick a Cloud Agent branch to build.</p>
         </div>
-        <button class="secondary" id="refreshAgents" type="button">Refresh</button>
+        <button class="secondary" id="refreshAgents" type="button" ${
+          state.agentsLoading ? "disabled" : ""
+        }>${state.agentsLoading ? "Loading…" : "Refresh"}</button>
       </div>
+
+      <div class="filter-bar">
+        <label class="sr-only" for="agentsQuery">Search agents</label>
+        <input
+          id="agentsQuery"
+          type="search"
+          enterkeyhint="search"
+          placeholder="Search name or branch…"
+          value="${escapeAttr(state.agentsQuery)}"
+          autocomplete="off"
+        />
+        <label class="check-row">
+          <input type="checkbox" id="agentsShowArchived" ${
+            state.agentsShowArchived ? "checked" : ""
+          } />
+          <span>Show archived${archivedCount ? ` (${archivedCount})` : ""}</span>
+        </label>
+      </div>
+
       ${state.warning ? `<p class="hint">${escapeHtml(state.warning)}</p>` : ""}
       ${state.error ? `<p class="error">${escapeHtml(state.error)}</p>` : ""}
+
       ${
-        state.agents.length
-          ? `<div class="stack" style="margin-top:0.75rem">
-            ${state.agents
-              .map(
-                (a) => `<button type="button" class="list-item tappable" data-agent="${escapeAttr(a.id)}">
-                  <div class="title">${escapeHtml(a.name)}
-                    ${a.relevance > 40 ? `<span class="badge fav">likely</span>` : ""}
-                    ${a.status ? `<span class="badge">${escapeHtml(a.status)}</span>` : ""}
-                  </div>
-                  <div class="muted">${escapeHtml(fmtTime(a.updatedAt))}</div>
-                </button>`,
-              )
-              .join("")}
-            </div>`
-          : `<p class="muted" style="margin-top:0.75rem">No agents yet. Add <code>CURSOR_API_KEY</code> in <code>.env</code>.</p>`
+        state.agentsLoading && !state.agents.length
+          ? `<div class="loading-panel" role="status" aria-live="polite" style="margin-top:0.85rem">
+              <div class="spinner" aria-hidden="true"></div>
+              <p class="muted" style="margin:0">Loading agents…</p>
+            </div>
+            <div class="skeleton-block" aria-hidden="true"></div>
+            <div class="skeleton-block" aria-hidden="true"></div>
+            <div class="skeleton-block short" aria-hidden="true"></div>`
+          : filtered.length
+            ? `<div class="stack" style="margin-top:0.75rem">
+                ${filtered
+                  .map(
+                    (a) => `<button type="button" class="list-item tappable ${
+                      isArchivedAgent(a) ? "is-archived" : ""
+                    }" data-agent="${escapeAttr(a.id)}">
+                      <div class="title">${escapeHtml(a.name)}
+                        ${a.relevance > 40 ? `<span class="badge fav">likely</span>` : ""}
+                        ${agentStatusBadge(a)}
+                      </div>
+                      <div class="muted">${escapeHtml(fmtTime(a.updatedAt))}</div>
+                    </button>`,
+                  )
+                  .join("")}
+              </div>
+              ${
+                hiddenByFilter
+                  ? `<p class="hint">${hiddenByFilter} hidden by filters</p>`
+                  : ""
+              }`
+            : `<p class="muted" style="margin-top:0.75rem">${
+                state.agents.length
+                  ? "No agents match these filters."
+                  : 'No agents yet. Add <code>CURSOR_API_KEY</code> in <code>.env</code>.'
+              }</p>`
       }
     </div>
   `;
@@ -899,9 +1024,11 @@ function render() {
 
   const statusLabel = state.busy
     ? "building…"
-    : setupMissing().length
-      ? "setup needed"
-      : "ready";
+    : state.openingAgentId || state.agentsLoading
+      ? "loading…"
+      : setupMissing().length
+        ? "setup needed"
+        : "ready";
 
   app.innerHTML = `
     <header class="appbar">
@@ -909,7 +1036,15 @@ function render() {
         <h1>buildswiftlazily</h1>
         <span class="tagline">couch → phone</span>
       </div>
-      <div class="pill ${state.busy ? "pill-busy" : setupMissing().length ? "pill-warn" : "pill-ok"}">${statusLabel}</div>
+      <div class="pill ${
+        state.busy
+          ? "pill-busy"
+          : state.openingAgentId || state.agentsLoading
+            ? "pill-busy"
+            : setupMissing().length
+              ? "pill-warn"
+              : "pill-ok"
+      }">${statusLabel}</div>
     </header>
     <main id="view">${body}</main>
     <nav class="tabs" aria-label="Primary">
@@ -1010,6 +1145,35 @@ function render() {
 
   const refreshAgents = app.querySelector("#refreshAgents");
   if (refreshAgents) refreshAgents.addEventListener("click", loadAgents);
+
+  const agentsQuery = app.querySelector("#agentsQuery");
+  if (agentsQuery) {
+    agentsQuery.addEventListener("input", (e) => {
+      state.agentsQuery = e.target.value || "";
+      persistAgentsFilters();
+      const start = agentsQuery.selectionStart;
+      const end = agentsQuery.selectionEnd;
+      render();
+      const again = app.querySelector("#agentsQuery");
+      if (again) {
+        again.focus();
+        try {
+          again.setSelectionRange(start, end);
+        } catch {
+          /* ignore */
+        }
+      }
+    });
+  }
+  const agentsShowArchived = app.querySelector("#agentsShowArchived");
+  if (agentsShowArchived) {
+    agentsShowArchived.addEventListener("change", (e) => {
+      state.agentsShowArchived = Boolean(e.target.checked);
+      persistAgentsFilters();
+      render();
+    });
+  }
+
   app.querySelectorAll("[data-agent]").forEach((btn) =>
     btn.addEventListener("click", () => openAgent(btn.getAttribute("data-agent"))),
   );
@@ -1017,6 +1181,7 @@ function render() {
   if (backAgents)
     backAgents.addEventListener("click", () => {
       state.agentDetail = null;
+      state.openingAgentId = null;
       render();
     });
   const deployAgentBtn = app.querySelector("#deployAgentBtn");

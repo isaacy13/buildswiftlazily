@@ -5,6 +5,7 @@ export type CursorAgent = {
   id: string;
   name: string;
   status?: string;
+  archived?: boolean;
   createdAt?: string;
   updatedAt?: string;
   url?: string;
@@ -36,10 +37,27 @@ async function cursorFetch(
   return fetch(`https://api.cursor.com${apiPath}`, { ...init, headers });
 }
 
+export function isArchivedAgentFields(item: {
+  archived?: boolean;
+  isArchived?: boolean;
+  status?: unknown;
+}): boolean {
+  return (
+    item.isArchived === true ||
+    item.archived === true ||
+    /archiv/i.test(String(item.status || ""))
+  );
+}
+
 function normalizeAgent(item: Record<string, unknown>): CursorAgent {
   const id = String(item.id || item.bcId || "");
   const name = String(item.name || item.title || id);
   const status = item.status ? String(item.status) : undefined;
+  const archived = isArchivedAgentFields({
+    archived: item.archived === true,
+    isArchived: item.isArchived === true,
+    status,
+  });
   const createdAt = item.createdAt
     ? String(item.createdAt)
     : item.createdAtMs
@@ -74,6 +92,7 @@ function normalizeAgent(item: Record<string, unknown>): CursorAgent {
     id,
     name,
     status,
+    archived,
     createdAt,
     updatedAt,
     url,
