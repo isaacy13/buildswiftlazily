@@ -45,7 +45,7 @@ export function isArchivedAgentFields(item: {
   return (
     item.isArchived === true ||
     item.archived === true ||
-    /archiv/i.test(String(item.status || ""))
+    /\barchiv/i.test(String(item.status || ""))
   );
 }
 

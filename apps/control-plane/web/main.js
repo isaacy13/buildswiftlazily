@@ -377,7 +377,7 @@ async function openAgent(id) {
 }
 
 function isArchivedAgent(a) {
-  return Boolean(a?.archived) || /archiv/i.test(String(a?.status || ""));
+  return Boolean(a?.archived) || /\barchiv/i.test(String(a?.status || ""));
 }
 
 function filteredAgents() {

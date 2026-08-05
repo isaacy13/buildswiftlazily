@@ -114,6 +114,8 @@ test("isArchivedAgentFields detects archived agents", () => {
   assert.equal(isArchivedAgentFields({ isArchived: true, status: "IDLE" }), true);
   assert.equal(isArchivedAgentFields({ archived: true }), true);
   assert.equal(isArchivedAgentFields({ status: "ARCHIVED" }), true);
+  assert.equal(isArchivedAgentFields({ status: "UNARCHIVED" }), false);
+  assert.equal(isArchivedAgentFields({ status: "NOT_ARCHIVED" }), false);
   assert.equal(isArchivedAgentFields({ status: "RUNNING", isArchived: false }), false);
 });
 
