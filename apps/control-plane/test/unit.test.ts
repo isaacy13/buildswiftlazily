@@ -14,7 +14,7 @@ import {
   assertSafeScheme,
   assertSafeTitle,
 } from "../src/config.js";
-import { scoreGuideAiRelevance } from "../src/cursor.js";
+import { scoreGuideAiRelevance, isArchivedAgentFields } from "../src/cursor.js";
 import {
   buildInstallHtml,
   buildItmsUrl,
@@ -109,6 +109,13 @@ test("scoreGuideAiRelevance prefers GuideAI agents", () => {
     "x/GuideAI",
   );
   assert.ok(a > b);
+});
+
+test("isArchivedAgentFields detects archived agents", () => {
+  assert.equal(isArchivedAgentFields({ isArchived: true, status: "IDLE" }), true);
+  assert.equal(isArchivedAgentFields({ archived: true }), true);
+  assert.equal(isArchivedAgentFields({ status: "ARCHIVED" }), true);
+  assert.equal(isArchivedAgentFields({ status: "RUNNING", isArchived: false }), false);
 });
 
 test("OTA manifest + itms URL", () => {

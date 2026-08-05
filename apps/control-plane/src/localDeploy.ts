@@ -1,6 +1,7 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { pipeline } from "node:stream/promises";
 import { createWriteStream } from "node:fs";
@@ -20,6 +21,7 @@ import {
   REPO_ROOT,
 } from "./config.js";
 import type { JobStore } from "./jobs.js";
+import { logInfo } from "./security.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -207,7 +209,31 @@ export function childEnvForScript(
   return env;
 }
 
-async function runScript(
+const SCRIPT_TIMEOUT_MS = 60 * 60 * 1000;
+const HEARTBEAT_MS = 30_000;
+
+/** Notable lines also echo to the Mac control-plane console (avoid xcodebuild spam). */
+function shouldMirrorToConsole(line: string): boolean {
+  return /error|warning:|archive|export|upload|validat|testflight|building|signing|codesign|ipa|failed|success|compiling|linking|note:|still running|DRY_RUN|Injected|Checkout|ASC |CFBundle|TESTFLIGHT|altool|Authenticat|Processing|App Store/i.test(
+    line,
+  );
+}
+
+function formatElapsed(ms: number): string {
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  const rem = sec % 60;
+  if (min < 60) return `${min}m${rem ? ` ${rem}s` : ""}`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h ${min % 60}m`;
+}
+
+/**
+ * Run a build helper script, streaming stdout/stderr into the job log as lines
+ * arrive (buffered exec made long xcodebuild/altool runs look "stuck" for an hour).
+ */
+export async function runScript(
   jobId: string,
   jobs: JobStore,
   script: string,
@@ -215,25 +241,91 @@ async function runScript(
 ): Promise<{ stdout: string; stderr: string }> {
   const basename = path.basename(script);
   jobs.appendLog(jobId, `$ ${basename} ${args.join(" ")}`);
-  try {
-    const { stdout, stderr } = await execFileAsync(script, args, {
+  logInfo(`job ${jobId.slice(0, 8)} start ${basename}`);
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(script, args, {
       env: childEnvForScript(basename),
-      maxBuffer: 20 * 1024 * 1024,
-      timeout: 60 * 60 * 1000,
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    for (const line of `${stdout}\n${stderr}`.split("\n")) {
-      if (line.trim()) jobs.appendLog(jobId, line);
-    }
-    return { stdout, stderr };
-  } catch (e) {
-    const err = e as { stdout?: string; stderr?: string; message?: string };
-    for (const line of `${err.stdout || ""}\n${err.stderr || ""}\n${err.message || e}`.split(
-      "\n",
-    )) {
-      if (line.trim()) jobs.appendLog(jobId, line);
-    }
-    throw e;
-  }
+
+    const outLines: string[] = [];
+    const errLines: string[] = [];
+    let settled = false;
+    let lastActivity = Date.now();
+    const started = Date.now();
+
+    const onLine = (line: string, stream: "out" | "err") => {
+      lastActivity = Date.now();
+      const text = line.replace(/\r/g, "").trimEnd();
+      if (!text.trim()) return;
+      if (stream === "out") outLines.push(text);
+      else errLines.push(text);
+      jobs.appendLog(jobId, text);
+      if (shouldMirrorToConsole(text)) {
+        const clipped = text.length > 220 ? `${text.slice(0, 200)}…` : text;
+        logInfo(`[${basename}] ${clipped}`);
+      }
+    };
+
+    const rlOut = createInterface({ input: child.stdout! });
+    const rlErr = createInterface({ input: child.stderr! });
+    rlOut.on("line", (l) => onLine(l, "out"));
+    rlErr.on("line", (l) => onLine(l, "err"));
+
+    const heartbeat = setInterval(() => {
+      const elapsed = formatElapsed(Date.now() - started);
+      const idleSec = Math.floor((Date.now() - lastActivity) / 1000);
+      const msg = `… still running ${basename} (${elapsed} elapsed, last output ${idleSec}s ago)`;
+      jobs.appendLog(jobId, msg);
+      logInfo(`job ${jobId.slice(0, 8)} ${msg}`);
+    }, HEARTBEAT_MS);
+
+    const killer = setTimeout(() => {
+      const msg = `TIMEOUT: ${basename} exceeded ${formatElapsed(SCRIPT_TIMEOUT_MS)} — sending SIGTERM`;
+      jobs.appendLog(jobId, msg);
+      logInfo(`job ${jobId.slice(0, 8)} ${msg}`);
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        if (!settled) child.kill("SIGKILL");
+      }, 15_000).unref?.();
+    }, SCRIPT_TIMEOUT_MS);
+
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(heartbeat);
+      clearTimeout(killer);
+      rlOut.close();
+      rlErr.close();
+      fn();
+    };
+
+    child.on("error", (e) => {
+      finish(() => reject(e));
+    });
+
+    child.on("close", (code, signal) => {
+      finish(() => {
+        const stdout = outLines.join("\n");
+        const stderr = errLines.join("\n");
+        const elapsed = formatElapsed(Date.now() - started);
+        if (code === 0) {
+          jobs.appendLog(jobId, `${basename} finished OK in ${elapsed}`);
+          logInfo(`job ${jobId.slice(0, 8)} ${basename} OK in ${elapsed}`);
+          resolve({ stdout, stderr });
+          return;
+        }
+        const err = Object.assign(
+          new Error(
+            `${basename} exited ${code ?? "?"}${signal ? ` signal=${signal}` : ""} after ${elapsed}`,
+          ),
+          { stdout, stderr, code, signal },
+        );
+        reject(err);
+      });
+    });
+  });
 }
 
 export async function runLocalDeploy(
@@ -319,6 +411,12 @@ export async function runLocalDeploy(
             ? "both"
             : "ota";
 
+    jobs.appendLog(
+      jobId,
+      mode === "testflight"
+        ? "Starting Xcode archive (often 10–40+ min). Live log below — keep this Mac awake."
+        : "Starting Xcode archive. Live log below — keep this Mac awake.",
+    );
     await runScript(jobId, jobs, buildScript, [
       "--root",
       checkout,
@@ -417,6 +515,10 @@ export async function runLocalDeploy(
         bver = fs.readFileSync(path.join(outDir, "bundle_version.txt"), "utf8").trim();
       }
       if (bver) jobs.appendLog(jobId, `CFBundleVersion=${bver} (must be unique per upload)`);
+      jobs.appendLog(
+        jobId,
+        "Uploading IPA to App Store Connect (altool). Do not Ctrl+C the Mac control plane.",
+      );
       const tfArgs = ["--ipa", ipa, "--platform", platform];
       if (dry) tfArgs.push("--dry-run");
       const tf = await runScript(
