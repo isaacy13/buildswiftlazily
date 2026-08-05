@@ -605,6 +605,244 @@ code {
   line-height: 1.4;
 }
 
+/* ——— Calm UX: steps, disclosure, job hero ——— */
+.step {
+  margin-bottom: 1.15rem;
+}
+
+.step:last-of-type {
+  margin-bottom: 0.25rem;
+}
+
+.step-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 0.55rem;
+}
+
+.summary-line {
+  margin: 0.55rem 0 0;
+  font-size: 0.84rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.summary-line strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.seg-3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 1rem;
+  padding: 0.45rem 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.disclosure.block-disclosure {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  margin: 0.25rem 0 0.85rem;
+  padding: 0.75rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+.disclosure:hover {
+  color: var(--text);
+}
+
+.chev {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+  opacity: 0.7;
+}
+
+.chev.open {
+  transform: rotate(-135deg);
+}
+
+.advanced {
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+
+.text-btn {
+  display: inline-flex;
+  margin-top: 0.75rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.build-card.is-dim {
+  opacity: 0.72;
+}
+
+.job-card.is-live {
+  border-color: rgba(255, 214, 10, 0.28);
+  background:
+    linear-gradient(180deg, rgba(255, 214, 10, 0.06), transparent 42%),
+    var(--surface);
+}
+
+.job-card.is-ready {
+  border-color: rgba(48, 209, 88, 0.32);
+  background:
+    linear-gradient(180deg, rgba(48, 209, 88, 0.08), transparent 42%),
+    var(--surface);
+}
+
+.job-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
+}
+
+.job-head h2 {
+  margin: 0;
+}
+
+.job-meta {
+  margin: 0.25rem 0 0;
+}
+
+.job-latest {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  margin: 0.75rem 0 0;
+  padding: 0.7rem 0.8rem;
+  background: var(--surface-2);
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border);
+  font-size: 0.86rem;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.pulse {
+  flex-shrink: 0;
+  width: 0.55rem;
+  height: 0.55rem;
+  margin-top: 0.35rem;
+  border-radius: 50%;
+  background: var(--warn);
+  box-shadow: 0 0 0 0 rgba(255, 214, 10, 0.55);
+  animation: pulse 1.4s ease-out infinite;
+}
+
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(255, 214, 10, 0.45); }
+  70% { box-shadow: 0 0 0 0.55rem rgba(255, 214, 10, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 214, 10, 0); }
+}
+
+.banner.compact {
+  padding: 0.7rem 0.95rem;
+  font-size: 0.86rem;
+}
+
+.card-emphasis {
+  border-color: rgba(10, 132, 255, 0.4);
+  box-shadow: 0 0 0 1px rgba(10, 132, 255, 0.15);
+}
+
+.checklist-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+
+.checklist-item .badge {
+  margin-left: 0;
+  margin-top: 0.1rem;
+}
+
+.checklist-copy {
+  min-width: 0;
+}
+
+.stack {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.stack .list-item.tappable {
+  margin: 0;
+}
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+
+.kv:last-child {
+  border-bottom: 0;
+}
+
+.kv span {
+  color: var(--muted);
+}
+
+.prompt.assistant {
+  border-color: rgba(10, 132, 255, 0.22);
+  background: rgba(10, 132, 255, 0.06);
+}
+
+header .pill-ok {
+  color: var(--good);
+  border-color: rgba(48, 209, 88, 0.28);
+  background: var(--good-soft);
+}
+
+header .pill-warn {
+  color: var(--warn);
+  border-color: rgba(255, 214, 10, 0.28);
+  background: var(--warn-soft);
+}
+
+header .pill-busy {
+  color: #6eb6ff;
+  border-color: rgba(10, 132, 255, 0.3);
+  background: var(--accent-soft);
+}
+
 /* ——— Desktop / large screens ——— */
 @media (min-width: 720px) {
   :root {
@@ -613,7 +851,7 @@ code {
 
   #app {
     padding-top: calc(var(--safe-top) + 1.5rem);
-    padding-bottom: calc(var(--tab-h) + var(--safe-bottom) + 2rem);
+    padding-bottom: calc(var(--tab-h) + 2.75rem + var(--safe-bottom));
   }
 
   header h1 {
@@ -638,17 +876,13 @@ code {
     display: none;
   }
 
-  #app {
-    padding-bottom: calc(var(--tab-h) + 2.75rem + var(--safe-bottom));
-  }
-
-  .seg {
-    grid-template-columns: repeat(4, 1fr);
+  .seg-3 {
+    grid-template-columns: repeat(3, 1fr);
   }
 }
 
 @media (min-width: 520px) and (max-width: 719px) {
-  .seg {
+  .seg:not(.seg-3) {
     grid-template-columns: repeat(2, 1fr);
   }
 }
@@ -672,12 +906,15 @@ code {
   .seg-option {
     padding: 0.6rem 0.55rem;
   }
+
+  .seg-3 {
+    gap: 0.35rem;
+  }
 }
 
 /* Standalone PWA: ensure flush edges */
 @media (display-mode: standalone) {
   .tabs {
-    /* Keep bar glued to physical bottom; safe-area is in padding */
     bottom: 0;
   }
 }

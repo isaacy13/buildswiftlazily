@@ -29,6 +29,9 @@ const state = {
   pollTimer: null,
   apiToken: "",
   apiAuthRequired: false,
+  showAdvanced: false,
+  showStatusMore: false,
+  showLogs: false,
 };
 
 const app = document.getElementById("app");
@@ -232,6 +235,7 @@ async function refreshIos() {
   if (data.warning) state.warning = data.warning;
   if (!state.scheme && data.suggestedScheme) state.scheme = data.suggestedScheme;
   if (data.suggestedPath) state.projectPath = data.suggestedPath;
+  if (!state.scheme) state.showAdvanced = true;
 }
 
 function stopPoll() {
@@ -388,64 +392,102 @@ const TAB_ICONS = {
   status: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4.5l2.5 1.5"/></svg>`,
 };
 
+function setupMissing() {
+  return (state.setup?.items || []).filter((i) => i.required && !i.ok);
+}
+
 function renderSetupBanner() {
   if (!state.setup) return "";
-  const missing = (state.setup.items || []).filter((i) => i.required && !i.ok);
-  const optionalBad = (state.setup.items || []).filter((i) => !i.required && !i.ok);
-  if (!missing.length && state.tab !== "status") {
-    return `<div class="banner ok">Ready for local builds on this Mac. Prefer <strong>OTA</strong> on the couch, <strong>TestFlight</strong> when you want Apple-hosted installs.</div>`;
-  }
-  if (state.tab === "projects" && missing.length) {
+  const missing = setupMissing();
+
+  // Build tab: only interrupt when something is wrong
+  if (state.tab === "projects") {
+    if (!missing.length) return "";
     return `<div class="banner warn">
-      <strong>Finish setup</strong> — ${escapeHtml(missing.map((m) => m.label).join(", "))}
-      <div class="muted">Open Status for the checklist · see docs/SETUP.md</div>
+      <strong>Setup needed</strong>
+      <div class="muted">${escapeHtml(missing.map((m) => m.label).join(" · "))}</div>
+      <button type="button" class="secondary" data-tab-jump="status" style="margin-top:0.65rem">Fix in Setup</button>
     </div>`;
   }
-  if (state.tab === "status") {
-    return `<div class="card"><h2>Setup checklist</h2>
-      <p class="muted lead">Required items must be green before builds will succeed.</p>
-      ${(state.setup.items || [])
-        .map(
-          (i) => `<div class="list-item">
-            <span class="badge ${i.ok ? "ok" : i.required ? "err" : "run"}">${i.ok ? "OK" : "TODO"}</span>
+
+  if (state.tab !== "status") return "";
+
+  return `<div class="card">
+    <h2>Checklist</h2>
+    <p class="muted lead">Green means you’re ready to build.</p>
+    ${(state.setup.items || [])
+      .map(
+        (i) => `<div class="list-item checklist-item">
+          <span class="badge ${i.ok ? "ok" : i.required ? "err" : "run"}">${i.ok ? "OK" : "TODO"}</span>
+          <div class="checklist-copy">
             <span class="title">${escapeHtml(i.label)}</span>
             ${i.hint && !i.ok ? `<div class="muted">${escapeHtml(i.hint)}</div>` : ""}
-          </div>`,
-        )
-        .join("")}
-      ${
-        optionalBad.length
-          ? `<p class="muted">Optional still open: ${escapeHtml(optionalBad.map((x) => x.label).join(", "))}</p>`
-          : ""
-      }
-    </div>`;
-  }
-  return "";
+          </div>
+        </div>`,
+      )
+      .join("")}
+  </div>`;
 }
 
 function renderJobCard() {
   const job = state.activeJob;
   if (!job) return "";
-  const logs = (job.logs || []).slice(-12).join("\n");
-  return `<div class="card">
-    <h2>Live deploy <span class="badge ${job.status === "succeeded" ? "ok" : job.status === "failed" ? "err" : "run"}">${escapeHtml(job.status)}</span></h2>
-    <p class="muted lead">${escapeHtml(job.engine)} · ${escapeHtml(job.repository)}@${escapeHtml(job.ref)} · ${escapeHtml(job.deployMode)}</p>
+  const live = isLiveJob(job);
+  const logs = job.logs || [];
+  const latestLog = logs.length ? logs[logs.length - 1] : "";
+  const showFullLogs = live || state.showLogs;
+  const statusClass =
+    job.status === "succeeded" ? "ok" : job.status === "failed" ? "err" : "run";
+  const title =
+    job.status === "succeeded"
+      ? "Ready to install"
+      : job.status === "failed"
+        ? "Build failed"
+        : "Building…";
+
+  return `<div class="card job-card ${live ? "is-live" : ""} ${job.status === "succeeded" ? "is-ready" : ""}">
+    <div class="job-head">
+      <div>
+        <h2>${escapeHtml(title)}</h2>
+        <p class="muted job-meta">${escapeHtml(job.scheme || job.repository)} · ${escapeHtml(job.ref)} · ${escapeHtml(job.deployMode)}</p>
+      </div>
+      <span class="badge ${statusClass}">${escapeHtml(job.status)}</span>
+    </div>
+    ${
+      live && latestLog
+        ? `<p class="job-latest"><span class="pulse" aria-hidden="true"></span>${escapeHtml(latestLog)}</p>`
+        : ""
+    }
     ${job.installUrl ? `<a class="primary" href="${escapeAttr(job.installUrl)}">Install on this iPhone</a>` : ""}
-    ${job.itmsUrl && !job.installUrl ? `<a class="primary" href="${escapeAttr(job.itmsUrl)}">itms-services install</a>` : ""}
-    ${job.testflightNote ? `<p class="success">${escapeHtml(job.testflightNote)}</p><a class="secondary block" href="itms-beta://" style="margin-top:0.5rem">Open TestFlight</a>` : ""}
+    ${job.itmsUrl && !job.installUrl ? `<a class="primary" href="${escapeAttr(job.itmsUrl)}">Install via itms-services</a>` : ""}
+    ${
+      job.testflightNote
+        ? `<p class="success">${escapeHtml(job.testflightNote)}</p>
+           <a class="secondary block" href="itms-beta://" style="margin-top:0.5rem">Open TestFlight</a>`
+        : ""
+    }
     ${job.error ? `<p class="error">${escapeHtml(job.error)}</p>` : ""}
-    <pre class="log">${escapeHtml(logs)}</pre>
+    ${
+      logs.length
+        ? `${
+            !live
+              ? `<button type="button" class="text-btn" id="toggleLogs">${state.showLogs ? "Hide log" : "Show log"}</button>`
+              : ""
+          }
+           ${showFullLogs ? `<pre class="log">${escapeHtml(logs.slice(-16).join("\n"))}</pre>` : ""}`
+        : ""
+    }
   </div>`;
 }
 
 function renderModeSeg() {
   const modes = [
-    { id: "ota", title: "OTA", desc: "Couch · Tailscale" },
-    { id: "testflight", title: "TestFlight", desc: "Anywhere" },
-    { id: "direct", title: "Direct", desc: "Paired phone" },
-    { id: "both", title: "OTA + Direct", desc: "Both paths" },
+    { id: "ota", title: "OTA", desc: "Fast · Tailscale" },
+    { id: "testflight", title: "TestFlight", desc: "Works anywhere" },
+    { id: "direct", title: "This phone", desc: "Paired to Mac" },
   ];
-  return `<div class="seg" role="radiogroup" aria-label="How to install">
+  // "both" lives in Advanced
+  return `<div class="seg seg-3" role="radiogroup" aria-label="How to install">
     ${modes
       .map(
         (m) => `<button type="button" class="seg-option ${
@@ -478,47 +520,74 @@ function renderProjects() {
         }>${escapeHtml(b.name)}</option>`,
     )
     .join("");
-  const iosInfo = state.ios
-    ? state.ios.projects?.length
-      ? state.ios.projects
-          .map(
-            (p) =>
-              `<button type="button" class="list-item tappable pick-ios" data-path="${escapeAttr(
-                p.projectPath,
-              )}" data-scheme="${escapeAttr(p.name)}">
-                <span class="title">${escapeHtml(p.name)}</span>
-                <span class="badge">${escapeHtml(p.kind)}</span>
-                <div class="muted">${escapeHtml(p.projectPath)}</div>
-              </button>`,
-          )
-          .join("")
-      : `<p class="muted">No Xcode projects auto-detected — set path &amp; scheme manually.</p>`
-    : `<p class="muted">Select a repo and branch to scan for apps.</p>`;
 
+  const iosProjects = state.ios?.projects || [];
   const modeHelp = {
-    ota: "Fast couch install via Tailscale (Ad Hoc). Works off home Wi‑Fi.",
-    direct: "Install and launch on a phone paired to this Mac (USB/Wi‑Fi).",
-    both: "Serves an OTA page and also installs directly if a phone is paired.",
-    testflight:
-      "Upload to App Store Connect, then install from the TestFlight app anywhere.",
+    ota: "Install over Tailscale from the couch.",
+    direct: "Install on a phone paired to this Mac.",
+    both: "OTA page plus direct install if paired.",
+    testflight: "Upload to TestFlight for installs anywhere.",
   };
+
+  const summaryBits = [
+    state.scheme || null,
+    state.projectPath && state.projectPath !== "." ? state.projectPath : null,
+  ].filter(Boolean);
+
+  const ctaLabel = state.busy
+    ? "Building…"
+    : state.deployMode === "testflight"
+      ? "Build & upload"
+      : "Build & install";
+
+  const jobFirst = state.activeJob && (isLiveJob(state.activeJob) || state.activeJob.status === "succeeded");
 
   return `
     ${renderSetupBanner()}
-    <div class="card">
-      <h2>Build &amp; ship</h2>
-      <p class="muted lead">Pick a branch, choose how to install, then tap Build. Default engine runs on this Mac.</p>
-      <div class="field-grid">
+    ${jobFirst ? renderJobCard() : ""}
+    <div class="card build-card ${state.busy ? "is-dim" : ""}">
+      <div class="step">
+        <div class="step-label">1 · What</div>
         <div class="field-pair">
           <div class="field">
-            <label for="repoSelect">Repository</label>
-            <select id="repoSelect">${repoOptions || "<option value=''>No repos</option>"}</select>
+            <label for="repoSelect">App</label>
+            <select id="repoSelect">${repoOptions || "<option value=''>No apps</option>"}</select>
           </div>
           <div class="field">
             <label for="branchSelect">Branch</label>
             <select id="branchSelect">${branchOptions || `<option>${escapeHtml(state.selectedRef || "")}</option>`}</select>
           </div>
         </div>
+        ${
+          summaryBits.length && !state.showAdvanced
+            ? `<p class="summary-line">${escapeHtml(summaryBits.join(" · "))}</p>`
+            : ""
+        }
+      </div>
+
+      <div class="step">
+        <div class="step-label">2 · Install</div>
+        ${renderModeSeg()}
+        <p class="hint">${escapeHtml(
+          state.deployMode === "both"
+            ? "OTA + Direct selected in Advanced."
+            : modeHelp[state.deployMode] || "",
+        )}</p>
+      </div>
+
+      <button class="primary" id="deployBtn" ${state.busy || !state.scheme || !state.selectedRepo ? "disabled" : ""}>
+        ${escapeHtml(ctaLabel)}
+      </button>
+      ${state.message ? `<p class="success">${escapeHtml(state.message)}</p>` : ""}
+      ${state.warning ? `<p class="hint">${escapeHtml(state.warning)}</p>` : ""}
+      ${state.error ? `<p class="error">${escapeHtml(state.error)}</p>` : ""}
+
+      <button type="button" class="disclosure" id="toggleAdvanced" aria-expanded="${state.showAdvanced}">
+        <span>${state.showAdvanced ? "Hide advanced" : "Advanced"}</span>
+        <span class="chev ${state.showAdvanced ? "open" : ""}" aria-hidden="true"></span>
+      </button>
+
+      <div class="advanced ${state.showAdvanced ? "" : "hidden"}">
         <div class="field-pair">
           <div class="field">
             <label for="pathInput">Project path</label>
@@ -529,188 +598,213 @@ function renderProjects() {
             <input id="schemeInput" value="${escapeAttr(state.scheme || "")}" placeholder="GuideAI" autocomplete="off" />
           </div>
         </div>
-        <div class="field">
-          <label>How to install</label>
-          ${renderModeSeg()}
-          <p class="hint">${escapeHtml(modeHelp[state.deployMode] || "")}</p>
-        </div>
-        <div class="field">
-          <label for="engineSelect">Build where</label>
+        <div class="field" style="margin-top:0.65rem">
+          <label for="engineSelect">Build on</label>
           <select id="engineSelect">
-            <option value="local" ${state.engine === "local" ? "selected" : ""}>This Mac (local) — recommended</option>
-            <option value="actions" ${state.engine === "actions" ? "selected" : ""}>GitHub Actions self-hosted runner</option>
+            <option value="local" ${state.engine === "local" ? "selected" : ""}>This Mac</option>
+            <option value="actions" ${state.engine === "actions" ? "selected" : ""}>GitHub Actions runner</option>
           </select>
         </div>
+        <div class="field" style="margin-top:0.65rem">
+          <label>Also</label>
+          <button type="button" class="seg-option ${state.deployMode === "both" ? "active" : ""}" data-mode="both" style="width:100%">
+            <span class="seg-title">OTA + Direct</span>
+            <span class="seg-desc">Both install paths at once</span>
+          </button>
+        </div>
+        ${
+          iosProjects.length
+            ? `<div class="field" style="margin-top:0.85rem">
+                <label>Detected apps</label>
+                ${iosProjects
+                  .map(
+                    (p) =>
+                      `<button type="button" class="list-item tappable pick-ios" data-path="${escapeAttr(
+                        p.projectPath,
+                      )}" data-scheme="${escapeAttr(p.name)}">
+                        <span class="title">${escapeHtml(p.name)}</span>
+                        <span class="badge">${escapeHtml(p.kind)}</span>
+                        <div class="muted">${escapeHtml(p.projectPath)}</div>
+                      </button>`,
+                  )
+                  .join("")}
+              </div>`
+            : ""
+        }
       </div>
-      <button class="primary" id="deployBtn" ${state.busy || !state.scheme || !state.selectedRepo ? "disabled" : ""}>
-        ${state.busy ? "Building…" : state.deployMode === "testflight" ? "Build & Upload to TestFlight" : "Build & Install"}
-      </button>
-      ${state.message ? `<p class="success">${escapeHtml(state.message)}</p>` : ""}
-      ${state.warning ? `<p class="hint">${escapeHtml(state.warning)}</p>` : ""}
-      ${state.error ? `<p class="error">${escapeHtml(state.error)}</p>` : ""}
     </div>
-    ${renderJobCard()}
-    <div class="card">
-      <h2>Detected iOS apps</h2>
-      <p class="muted lead">Tap one to fill path and scheme.</p>
-      ${iosInfo}
-    </div>
+    ${!jobFirst ? renderJobCard() : ""}
   `;
 }
 
 function renderCursor() {
   if (state.agentDetail) {
     const d = state.agentDetail;
-    const userMsgs = (d.userMessages || []).slice().reverse().slice(0, 8);
-    const runs = (d.runs || []).slice(0, 8);
+    const userMsgs = (d.userMessages || []).slice().reverse().slice(0, 6);
+    const branch = (d.agent.branches || []).find((b) => b.branch);
     return `
       <div class="card">
-        <div class="row" style="justify-content:space-between">
-          <button class="secondary" id="backAgents" type="button">← Agents</button>
-          <a class="secondary" href="${escapeAttr(d.cursorUrl)}" target="_blank" rel="noopener">Open in Cursor</a>
-        </div>
-        <h2 style="margin-top:0.85rem">${escapeHtml(d.agent.name)}</h2>
+        <button class="text-btn" id="backAgents" type="button">← All agents</button>
+        <h2 style="margin-top:0.5rem">${escapeHtml(d.agent.name)}</h2>
         <p class="muted lead">${escapeHtml(d.agent.status || "")} · ${escapeHtml(fmtTime(d.agent.updatedAt))}</p>
-        ${(d.agent.branches || [])
-          .map(
-            (b) =>
-              `<div class="muted" style="margin-bottom:0.35rem">${escapeHtml(b.repoUrl || "")} <strong>${escapeHtml(
-                b.branch || "",
-              )}</strong>${b.prUrl ? ` · <a href="${escapeAttr(b.prUrl)}" target="_blank" rel="noopener">PR</a>` : ""}</div>`,
-          )
-          .join("")}
-        <button class="primary" id="deployAgentBtn" type="button">Use this branch to build</button>
-      </div>
-      <div class="card">
-        <h2>Your recent messages</h2>
         ${
-          userMsgs.length
-            ? userMsgs.map((t) => `<div class="prompt">${escapeHtml(t)}</div>`).join("")
-            : `<p class="muted">No user prompts in API history for this agent.</p>`
+          branch
+            ? `<p class="summary-line"><strong>${escapeHtml(branch.branch || "")}</strong>
+                ${branch.prUrl ? ` · <a href="${escapeAttr(branch.prUrl)}" target="_blank" rel="noopener">PR</a>` : ""}
+               </p>`
+            : ""
         }
+        <button class="primary" id="deployAgentBtn" type="button">Build this branch</button>
+        <a class="secondary block" href="${escapeAttr(d.cursorUrl)}" target="_blank" rel="noopener" style="margin-top:0.55rem">Open in Cursor</a>
       </div>
-      <div class="card">
-        <h2>Latest assistant result</h2>
-        <div class="prompt">${escapeHtml(d.lastAssistantMessage || "—")}</div>
-      </div>
-      <div class="card">
-        <h2>Runs</h2>
-        ${
-          runs.length
-            ? runs
-                .map(
-                  (r) => `<div class="list-item"><span class="title">${escapeHtml(
-                    r.status || "",
-                  )}</span> <span class="muted">${escapeHtml(fmtTime(r.updatedAt || r.createdAt))}</span>
-                  ${r.result ? `<div class="prompt">${escapeHtml(r.result.slice(0, 500))}</div>` : ""}
-                  </div>`,
-                )
-                .join("")
-            : `<p class="muted">No runs.</p>`
-        }
-      </div>
+      ${
+        userMsgs.length || d.lastAssistantMessage
+          ? `<div class="card">
+              <h2>Context</h2>
+              ${userMsgs.map((t) => `<div class="prompt">${escapeHtml(t)}</div>`).join("")}
+              ${
+                d.lastAssistantMessage
+                  ? `<div class="prompt assistant">${escapeHtml(d.lastAssistantMessage)}</div>`
+                  : ""
+              }
+            </div>`
+          : ""
+      }
     `;
   }
 
   return `
     <div class="card">
-      <h2>What were you testing?</h2>
-      <p class="muted lead">Recent Cursor Cloud Agents — prompts, branches, and results. Local desktop chats aren’t in the API.</p>
-      <button class="secondary" id="refreshAgents" type="button">Refresh</button>
+      <div class="row" style="justify-content:space-between;align-items:flex-start">
+        <div>
+          <h2>Agents</h2>
+          <p class="muted lead" style="margin-bottom:0">Pick a Cloud Agent branch to build.</p>
+        </div>
+        <button class="secondary" id="refreshAgents" type="button">Refresh</button>
+      </div>
       ${state.warning ? `<p class="hint">${escapeHtml(state.warning)}</p>` : ""}
       ${state.error ? `<p class="error">${escapeHtml(state.error)}</p>` : ""}
       ${
         state.agents.length
-          ? state.agents
+          ? `<div class="stack" style="margin-top:0.75rem">
+            ${state.agents
               .map(
                 (a) => `<button type="button" class="list-item tappable" data-agent="${escapeAttr(a.id)}">
                   <div class="title">${escapeHtml(a.name)}
-                    ${a.relevance > 40 ? `<span class="badge fav">GuideAI?</span>` : ""}
+                    ${a.relevance > 40 ? `<span class="badge fav">likely</span>` : ""}
                     ${a.status ? `<span class="badge">${escapeHtml(a.status)}</span>` : ""}
                   </div>
                   <div class="muted">${escapeHtml(fmtTime(a.updatedAt))}</div>
                 </button>`,
               )
-              .join("")
-          : `<p class="muted" style="margin-top:0.75rem">No agents yet. Set CURSOR_API_KEY in .env.</p>`
+              .join("")}
+            </div>`
+          : `<p class="muted" style="margin-top:0.75rem">No agents yet. Add <code>CURSOR_API_KEY</code> in <code>.env</code>.</p>`
       }
     </div>
   `;
 }
 
 function renderStatus() {
+  const missing = setupMissing();
+  const needToken = state.apiAuthRequired && !state.apiToken;
   const health = state.config
-    ? `<div class="muted">Tailscale: <code>${escapeHtml(state.config.tsHost || "unset")}</code> · Engine: <code>${escapeHtml(state.config.deployEngine || "local")}</code></div>`
+    ? `<div class="kv"><span>Tailscale</span><code>${escapeHtml(state.config.tsHost || "unset")}</code></div>
+       <div class="kv"><span>Engine</span><code>${escapeHtml(state.config.deployEngine || "local")}</code></div>`
     : "";
-  const devices = state.devices
-    ? state.devices.phones?.length
-      ? state.devices.phones.map((p) => `<div class="list-item">${escapeHtml(p)}</div>`).join("")
-      : `<p class="muted">No paired iPhone (OTA / TestFlight still work).</p>`
-    : `<p class="muted">Device probe unavailable.</p>`;
-  const localJobs = (state.jobs || [])
-    .map(
-      (j) => `<div class="list-item">
-        <span class="badge ${j.status === "succeeded" ? "ok" : j.status === "failed" ? "err" : "run"}">${escapeHtml(j.status)}</span>
-        <span class="title">${escapeHtml(j.scheme)} · ${escapeHtml(j.deployMode)}</span>
-        <div class="muted">${escapeHtml(j.repository)}@${escapeHtml(j.ref)} · ${escapeHtml(fmtTime(j.updatedAt))}</div>
-        ${j.installUrl ? `<a class="secondary" href="${escapeAttr(j.installUrl)}" style="margin-top:0.5rem">Install</a>` : ""}
-        ${j.testflightNote ? `<div class="muted">${escapeHtml(j.testflightNote)}</div>` : ""}
-      </div>`,
-    )
-    .join("") || `<p class="muted">No local jobs yet.</p>`;
-  const runs = (state.deploys || [])
-    .map((r) => {
-      const badge =
-        r.status === "completed"
-          ? r.conclusion === "success"
-            ? "ok"
-            : "err"
-          : "run";
-      return `<div class="list-item">
-        <span class="title">${escapeHtml(r.display_title || r.name || String(r.id))}</span>
-        <span class="badge ${badge}">${escapeHtml(r.status)}${r.conclusion ? "/" + r.conclusion : ""}</span>
-        <div class="muted">${escapeHtml(fmtTime(r.updated_at))} · <a href="${escapeAttr(r.html_url)}" target="_blank" rel="noopener">Actions</a></div>
-      </div>`;
-    })
-    .join("") || `<p class="muted">No Actions runs (fine if you use local engine).</p>`;
-  const arts = (state.artifacts || [])
-    .map(
-      (a) => `<div class="list-item">
-        <div class="title">${escapeHtml(a.title || a.id)}</div>
-        <div class="muted">${escapeHtml(a.createdAt || "")}</div>
-        ${a.installUrl ? `<a class="primary" href="${escapeAttr(a.installUrl)}">Install page</a>` : ""}
-      </div>`,
-    )
-    .join("") || `<p class="muted">No OTA artifacts yet.</p>`;
+  const devices = state.devices?.phones?.length
+    ? state.devices.phones.map((p) => `<div class="list-item">${escapeHtml(p)}</div>`).join("")
+    : `<p class="muted">None paired — OTA and TestFlight still work.</p>`;
+  const localJobs = (state.jobs || []).slice(0, 6);
+  const jobsHtml = localJobs.length
+    ? localJobs
+        .map(
+          (j) => `<div class="list-item">
+            <span class="badge ${j.status === "succeeded" ? "ok" : j.status === "failed" ? "err" : "run"}">${escapeHtml(j.status)}</span>
+            <span class="title">${escapeHtml(j.scheme)}</span>
+            <div class="muted">${escapeHtml(j.ref)} · ${escapeHtml(fmtTime(j.updatedAt))}</div>
+            ${j.installUrl ? `<a class="secondary" href="${escapeAttr(j.installUrl)}" style="margin-top:0.5rem">Install</a>` : ""}
+          </div>`,
+        )
+        .join("")
+    : `<p class="muted">No builds yet.</p>`;
+  const runs = (state.deploys || []).slice(0, 5);
+  const runsHtml = runs.length
+    ? runs
+        .map((r) => {
+          const badge =
+            r.status === "completed"
+              ? r.conclusion === "success"
+                ? "ok"
+                : "err"
+              : "run";
+          return `<div class="list-item">
+            <span class="title">${escapeHtml(r.display_title || r.name || String(r.id))}</span>
+            <span class="badge ${badge}">${escapeHtml(r.status)}</span>
+            <div class="muted"><a href="${escapeAttr(r.html_url)}" target="_blank" rel="noopener">View on GitHub</a></div>
+          </div>`;
+        })
+        .join("")
+    : `<p class="muted">None (normal for local builds).</p>`;
+  const arts = (state.artifacts || []).slice(0, 5);
+  const artsHtml = arts.length
+    ? arts
+        .map(
+          (a) => `<div class="list-item">
+            <div class="title">${escapeHtml(a.title || a.id)}</div>
+            ${a.installUrl ? `<a class="secondary" href="${escapeAttr(a.installUrl)}" style="margin-top:0.4rem">Install page</a>` : ""}
+          </div>`,
+        )
+        .join("")
+    : `<p class="muted">None yet.</p>`;
 
   return `
+    ${
+      needToken || state.apiAuthRequired
+        ? `<div class="card ${needToken ? "card-emphasis" : ""}">
+            <h2>API token</h2>
+            <p class="muted lead">Paste <code>BSL_API_TOKEN</code> from your Mac’s <code>.env</code>.</p>
+            <label for="apiTokenInput">Token</label>
+            <input id="apiTokenInput" type="password" autocomplete="off" value="${escapeAttr(state.apiToken)}" placeholder="BSL_API_TOKEN" />
+            <div class="section-actions">
+              <button class="primary" id="saveApiToken" type="button" style="margin-top:0.5rem">Save</button>
+            </div>
+            ${
+              needToken
+                ? `<p class="error">Required before you can build.</p>`
+                : state.apiToken
+                  ? `<p class="success">Saved on this phone.</p>`
+                  : ""
+            }
+          </div>`
+        : ""
+    }
     ${renderSetupBanner()}
-    <div class="card"><h2>API token</h2>
-      <p class="muted lead">Paste <code>BSL_API_TOKEN</code> from <code>.env</code>. Stored only in this browser.</p>
-      <label for="apiTokenInput">Token</label>
-      <input id="apiTokenInput" type="password" autocomplete="off" value="${escapeAttr(state.apiToken)}" placeholder="paste from .env" />
-      <div class="section-actions">
-        <button class="secondary" id="saveApiToken" type="button">Save token</button>
-      </div>
-      ${
-        state.apiAuthRequired && !state.apiToken
-          ? `<p class="error">Server requires a token — API calls will fail until you save one.</p>`
-          : state.apiAuthRequired
-            ? `<p class="success">Token saved for this device.</p>`
-            : `<p class="hint">Server is not requiring a token (Tailscale/loopback only).</p>`
-      }
-    </div>
-    <div class="card"><h2>Environment</h2>
-      <p class="muted lead">Control plane health on this Mac.</p>
-      ${health}
-      <div class="section-actions">
+    ${
+      !missing.length && state.setup
+        ? `<div class="banner ok compact">All required setup looks good.</div>`
+        : ""
+    }
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <h2 style="margin:0">Recent builds</h2>
         <button class="secondary" id="refreshStatus" type="button">Refresh</button>
       </div>
+      <div style="margin-top:0.75rem">${jobsHtml}</div>
     </div>
-    <div class="card"><h2>Recent local jobs</h2>${localJobs}</div>
-    <div class="card"><h2>Paired devices</h2>${devices}</div>
-    <div class="card"><h2>GitHub Actions runs</h2>${runs}</div>
-    <div class="card"><h2>OTA install pages</h2>${arts}</div>
+    <button type="button" class="disclosure block-disclosure" id="toggleStatusMore" aria-expanded="${state.showStatusMore}">
+      <span>${state.showStatusMore ? "Hide details" : "Environment & more"}</span>
+      <span class="chev ${state.showStatusMore ? "open" : ""}" aria-hidden="true"></span>
+    </button>
+    <div class="${state.showStatusMore ? "" : "hidden"}">
+      <div class="card">
+        <h2>Environment</h2>
+        ${health}
+      </div>
+      <div class="card"><h2>Paired devices</h2>${devices}</div>
+      <div class="card"><h2>GitHub Actions</h2>${runsHtml}</div>
+      <div class="card"><h2>OTA pages</h2>${artsHtml}</div>
+    </div>
   `;
 }
 
@@ -722,13 +816,19 @@ function render() {
         ? renderCursor()
         : renderStatus();
 
+  const statusLabel = state.busy
+    ? "building…"
+    : setupMissing().length
+      ? "setup needed"
+      : "ready";
+
   app.innerHTML = `
     <header class="appbar">
       <div class="brand">
         <h1>buildswiftlazily</h1>
         <span class="tagline">couch → phone</span>
       </div>
-      <div class="pill">${state.busy ? "building…" : state.engine === "local" ? "local Mac" : "Actions"}</div>
+      <div class="pill ${state.busy ? "pill-busy" : setupMissing().length ? "pill-warn" : "pill-ok"}">${statusLabel}</div>
     </header>
     <main id="view">${body}</main>
     <nav class="tabs" aria-label="Primary">
@@ -736,16 +836,19 @@ function render() {
         ${TAB_ICONS.projects}<span>Build</span>
       </button>
       <button type="button" class="${state.tab === "cursor" ? "active" : ""}" data-tab="cursor" aria-current="${state.tab === "cursor" ? "page" : "false"}">
-        ${TAB_ICONS.cursor}<span>Cursor</span>
+        ${TAB_ICONS.cursor}<span>Agents</span>
       </button>
       <button type="button" class="${state.tab === "status" ? "active" : ""}" data-tab="status" aria-current="${state.tab === "status" ? "page" : "false"}">
-        ${TAB_ICONS.status}<span>Status</span>
+        ${TAB_ICONS.status}<span>Setup</span>
       </button>
     </nav>
   `;
 
   app.querySelectorAll("[data-tab]").forEach((btn) =>
     btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab"))),
+  );
+  app.querySelectorAll("[data-tab-jump]").forEach((btn) =>
+    btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab-jump"))),
   );
 
   const repoSelect = app.querySelector("#repoSelect");
@@ -796,6 +899,25 @@ function render() {
       render();
     }),
   );
+
+  const toggleAdvanced = app.querySelector("#toggleAdvanced");
+  if (toggleAdvanced)
+    toggleAdvanced.addEventListener("click", () => {
+      state.showAdvanced = !state.showAdvanced;
+      render();
+    });
+  const toggleLogs = app.querySelector("#toggleLogs");
+  if (toggleLogs)
+    toggleLogs.addEventListener("click", () => {
+      state.showLogs = !state.showLogs;
+      render();
+    });
+  const toggleStatusMore = app.querySelector("#toggleStatusMore");
+  if (toggleStatusMore)
+    toggleStatusMore.addEventListener("click", () => {
+      state.showStatusMore = !state.showStatusMore;
+      render();
+    });
 
   const refreshAgents = app.querySelector("#refreshAgents");
   if (refreshAgents) refreshAgents.addEventListener("click", loadAgents);
