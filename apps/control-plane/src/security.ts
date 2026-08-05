@@ -13,13 +13,20 @@ const SECRET_ENV_KEYS = [
   "BSL_ASC_ISSUER_ID",
   "ASC_KEY_ID",
   "ASC_ISSUER_ID",
+  /** Mac login keychain password for unattended codesign — treat as highly sensitive. */
+  "BSL_KEYCHAIN_PASSWORD",
 ];
 
 export function redact(text: string, extra: string[] = []): string {
   let out = text;
   const secrets = [
     ...extra,
-    ...SECRET_ENV_KEYS.map((k) => process.env[k] || "").filter((v) => v.length >= 8),
+    ...SECRET_ENV_KEYS.flatMap((k) => {
+      const v = process.env[k] || "";
+      // Login passwords can be short; redact from length 4. Other tokens need 8+.
+      const min = k === "BSL_KEYCHAIN_PASSWORD" ? 4 : 8;
+      return v.length >= min ? [v] : [];
+    }),
   ];
   for (const s of secrets) {
     out = out.split(s).join("[REDACTED]");

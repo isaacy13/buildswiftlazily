@@ -63,6 +63,8 @@ bsl_keychain_prepared_marker() {
 # Unlock login keychain for unattended xcodebuild/codesign.
 # Uses BSL_KEYCHAIN_PASSWORD when set. No-ops (exit 0) when unset so interactive
 # GUI sessions that already hold an unlocked keychain keep working.
+# On success, unsets BSL_KEYCHAIN_PASSWORD in this shell so child processes
+# (xcodebuild / Run Script phases) do not inherit the login password.
 bsl_unlock_keychain_for_build() {
   local pass="${BSL_KEYCHAIN_PASSWORD:-}"
   local keychain
@@ -71,7 +73,13 @@ bsl_unlock_keychain_for_build() {
     return 0
   fi
   if [[ "$(uname -s)" != "Darwin" ]]; then
+    unset BSL_KEYCHAIN_PASSWORD || true
     return 0
   fi
-  security unlock-keychain -p "$pass" "$keychain" >/dev/null
+  if ! security unlock-keychain -p "$pass" "$keychain" >/dev/null; then
+    unset BSL_KEYCHAIN_PASSWORD || true
+    return 1
+  fi
+  unset BSL_KEYCHAIN_PASSWORD || true
+  return 0
 }

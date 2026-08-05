@@ -150,6 +150,20 @@ test("redact strips tokens", () => {
   assert.match(redact("Basic YWJjZGVmZ2hpams="), /REDACTED/);
 });
 
+test("redact strips BSL_KEYCHAIN_PASSWORD including short values", () => {
+  const prev = process.env.BSL_KEYCHAIN_PASSWORD;
+  process.env.BSL_KEYCHAIN_PASSWORD = "hunter2";
+  try {
+    assert.equal(
+      redact("unlock failed for hunter2 in keychain"),
+      "unlock failed for [REDACTED] in keychain",
+    );
+  } finally {
+    if (prev === undefined) delete process.env.BSL_KEYCHAIN_PASSWORD;
+    else process.env.BSL_KEYCHAIN_PASSWORD = prev;
+  }
+});
+
 test("DeployGate enforces single flight and cooldown", () => {
   const gate = new DeployGate(60_000);
   assert.equal(gate.tryAcquire().ok, true);

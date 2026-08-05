@@ -145,10 +145,18 @@ fi
 echo "Building archive (platform=$PLATFORM destination=$XCODE_DEST)…"
 # Prefer automatic signing updates on personal Mac runner
 if [[ "$DRY_RUN" != "1" ]]; then
+  HAD_KC_PASS=0
+  [[ -n "${BSL_KEYCHAIN_PASSWORD:-}" ]] && HAD_KC_PASS=1
   if ! bsl_unlock_keychain_for_build; then
-    echo "Warning: could not unlock login keychain (BSL_KEYCHAIN_PASSWORD wrong?)." >&2
-    echo "Run ./scripts/prepare-keychain.sh on the Mac, or unlock Keychain Access once." >&2
+    echo "Could not unlock login keychain (BSL_KEYCHAIN_PASSWORD wrong or keychain missing)." >&2
+    echo "Run ./scripts/prepare-keychain.sh on the Mac, or fix BSL_KEYCHAIN_PASSWORD." >&2
+    # Fail closed when the operator explicitly configured a password for unattended unlock.
+    if [[ "$HAD_KC_PASS" == "1" ]]; then
+      exit 1
+    fi
   fi
+  # Defense in depth if unlock was a no-op path
+  unset BSL_KEYCHAIN_PASSWORD || true
 fi
 ARCHIVE_CMD=( xcodebuild "${XCODE_ARGS[@]}" -allowProvisioningUpdates clean archive )
 if [[ -n "$TEAM_ID" ]]; then

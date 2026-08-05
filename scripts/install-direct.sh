@@ -103,11 +103,11 @@ def walk(o):
 
 walk(data)
 if want == "watch":
-    candidates = watches or phones
+    candidates = watches
 elif want == "any":
     candidates = phones + watches
 else:
-    candidates = phones or watches
+    candidates = phones
 if candidates:
     print(candidates[0])
 PY
@@ -129,11 +129,11 @@ for line in sys.stdin:
     elif "iphone" in low or "ipod" in low:
         phones.append(m.group(0))
 if want == "watch":
-    c = watches or phones
+    c = watches
 elif want == "any":
     c = phones + watches
 else:
-    c = phones or watches
+    c = phones
 if c:
     print(c[0])
 ')"
