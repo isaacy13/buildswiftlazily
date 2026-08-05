@@ -452,12 +452,24 @@ function renderJobCard() {
       : job.status === "failed"
         ? "Build failed"
         : "Building…";
+  const startedMs = job.createdAt ? Date.parse(job.createdAt) : NaN;
+  const elapsed =
+    live && !Number.isNaN(startedMs)
+      ? (() => {
+          const sec = Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
+          if (sec < 60) return `${sec}s`;
+          const min = Math.floor(sec / 60);
+          return min < 60 ? `${min}m ${sec % 60}s` : `${Math.floor(min / 60)}h ${min % 60}m`;
+        })()
+      : "";
 
   return `<div class="card job-card ${live ? "is-live" : ""} ${job.status === "succeeded" ? "is-ready" : ""}">
     <div class="job-head">
       <div>
         <h2>${escapeHtml(title)}</h2>
-        <p class="muted job-meta">${escapeHtml(job.scheme || job.repository)} · ${escapeHtml(job.ref)} · ${escapeHtml(job.deployMode)}</p>
+        <p class="muted job-meta">${escapeHtml(job.scheme || job.repository)} · ${escapeHtml(job.ref)} · ${escapeHtml(job.deployMode)}${
+          elapsed ? ` · ${escapeHtml(elapsed)}` : ""
+        }</p>
       </div>
       <span class="badge ${statusClass}">${escapeHtml(job.status)}</span>
     </div>
@@ -481,10 +493,12 @@ function renderJobCard() {
         ? `${
             !live
               ? `<button type="button" class="text-btn" id="toggleLogs">${state.showLogs ? "Hide log" : "Show log"}</button>`
-              : ""
+              : `<p class="hint" style="margin-top:0.65rem">Live log · updates every few seconds</p>`
           }
-           ${showFullLogs ? `<pre class="log">${escapeHtml(logs.slice(-16).join("\n"))}</pre>` : ""}`
-        : ""
+           ${showFullLogs ? `<pre class="log">${escapeHtml(logs.slice(-40).join("\n"))}</pre>` : ""}`
+        : live
+          ? `<p class="muted" style="margin-top:0.65rem">Waiting for first log line…</p>`
+          : ""
     }
   </div>`;
 }

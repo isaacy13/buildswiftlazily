@@ -119,15 +119,15 @@ fi
 
 AUTH=(--apiKey "$KEY_ID" --apiIssuer "$ISSUER_ID")
 
-# Capture altool output for clearer failures (auth, duplicate build, etc.).
+# Stream altool live into the job log (tee), while keeping a copy for error hints.
 run_altool() {
   local logfile status
   logfile="$(mktemp)"
   set +e
-  xcrun altool "$@" "${AUTH[@]}" >"$logfile" 2>&1
-  status=$?
+  # PIPESTATUS[0] is altool; tee almost always exits 0
+  xcrun altool "$@" "${AUTH[@]}" 2>&1 | tee "$logfile"
+  status=${PIPESTATUS[0]}
   set -e
-  cat "$logfile"
   if [[ "$status" -ne 0 ]]; then
     if grep -qiE 'Unable to authenticate|invalid.*key|JWT|401|403|Could not find.*AuthKey' "$logfile"; then
       echo "ASC API auth failed — check BSL_ASC_KEY_ID / ISSUER_ID and AuthKey_${KEY_ID}.p8 (Access: App Manager or Admin)." >&2
