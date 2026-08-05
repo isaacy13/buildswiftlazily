@@ -416,14 +416,18 @@ async function deploy() {
         }
       } catch (reattachErr) {
         state.error = String(reattachErr.message || reattachErr);
-        state.busy = false;
+        if (!(state.activeJob && isLiveJob(state.activeJob))) {
+          state.busy = false;
+        }
         render();
         return;
       }
     }
 
     state.error = String(e.message || e);
-    state.busy = false;
+    if (!(state.activeJob && isLiveJob(state.activeJob))) {
+      state.busy = false;
+    }
     render();
   }
 }
