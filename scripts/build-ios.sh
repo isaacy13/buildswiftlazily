@@ -143,6 +143,7 @@ else
 fi
 
 echo "Building archive (platform=$PLATFORM destination=$XCODE_DEST)…"
+echo "xcodebuild can take 10–40+ minutes with little output — heartbeats will keep ticking."
 # Prefer automatic signing updates on personal Mac runner
 if [[ "$DRY_RUN" != "1" ]]; then
   HAD_KC_PASS=0
@@ -162,7 +163,9 @@ ARCHIVE_CMD=( xcodebuild "${XCODE_ARGS[@]}" -allowProvisioningUpdates clean arch
 if [[ -n "$TEAM_ID" ]]; then
   ARCHIVE_CMD+=( DEVELOPMENT_TEAM="$TEAM_ID" )
 fi
+echo "Running: ${ARCHIVE_CMD[*]}"
 run "${ARCHIVE_CMD[@]}"
+echo "Archive step finished."
 
 # Locate .app inside archive for direct install
 if [[ "$MODE" == "direct" || "$MODE" == "both" ]]; then
