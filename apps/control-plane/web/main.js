@@ -380,6 +380,8 @@ async function deploy() {
     state.activeJob = null;
     rememberActiveJobId(result.jobId);
     stopPoll();
+    // Drop the previous job card before awaiting the new job's first poll.
+    render();
     if (result.engine === "local" && result.jobId) {
       state.showLogs = true;
       state.pollTimer = setInterval(() => pollJob(result.jobId), 1500);
