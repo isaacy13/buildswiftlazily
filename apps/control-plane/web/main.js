@@ -1229,7 +1229,9 @@ function render() {
 
   const view = app.querySelector("#view");
   if (!view) return;
+  const scrollTop = view.scrollTop;
   view.innerHTML = body;
+  view.scrollTop = scrollTop;
   bindViewEvents(view);
 }
 
