@@ -125,6 +125,12 @@ fi
 [[ -f "$IPA" ]] || { echo "IPA not found: $IPA" >&2; exit 1; }
 [[ -n "$TS_HOST" ]] || { echo "BSL_TS_HOST / --ts-host required" >&2; exit 1; }
 
+# Hostname only (MagicDNS) — reject URLs / path injection into manifest URLs
+if [[ ! "$TS_HOST" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+  echo "Invalid ts-host (expected MagicDNS hostname, e.g. mac.tailnet.ts.net)" >&2
+  exit 2
+fi
+
 # sanitize artifact id
 if [[ ! "$ARTIFACT_ID" =~ ^[A-Za-z0-9_-]+$ ]]; then
   echo "Invalid artifact-id" >&2

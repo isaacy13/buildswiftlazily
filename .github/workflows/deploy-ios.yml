@@ -179,9 +179,15 @@ jobs:
             --ts-host "$BSL_TS_HOST")"
           STATUS=$?
           set -e
-          echo "$OUT"
-          INSTALL_URL="$(echo "$OUT" | grep '^INSTALL_URL=' | cut -d= -f2-)"
-          echo "install_url=$INSTALL_URL" >> "$GITHUB_OUTPUT"
+          # This tooling repo may be public — never print full OTA/itms URLs
+          # (MagicDNS host + UUID) into world-readable Actions logs.
+          echo "$OUT" | grep -vE '^(INSTALL_URL|ITMS_URL)=' || true
+          INSTALL_URL="$(echo "$OUT" | grep '^INSTALL_URL=' | cut -d= -f2- || true)"
+          echo "artifact_id=$ARTIFACT_ID" >> "$GITHUB_OUTPUT"
+          # Keep install_url for private forks; prefer artifact id in summaries.
+          if [[ -n "$INSTALL_URL" ]]; then
+            echo "install_url=$INSTALL_URL" >> "$GITHUB_OUTPUT"
+          fi
           exit $STATUS
 
       - name: Upload TestFlight
@@ -206,7 +212,7 @@ jobs:
           REF: ${{ inputs.ref }}
           SCHEME: ${{ inputs.scheme }}
           DEPLOY_MODE: ${{ inputs.deploy_mode }}
-          INSTALL_URL: ${{ steps.ota.outputs.install_url }}
+          ARTIFACT_ID: ${{ steps.ota.outputs.artifact_id }}
         run: |
           {
             echo "## buildswiftlazily deploy"
@@ -215,8 +221,8 @@ jobs:
             echo "- ref: \`$REF\`"
             echo "- scheme: \`$SCHEME\`"
             echo "- mode: \`$DEPLOY_MODE\`"
-            if [[ -n "${INSTALL_URL:-}" ]]; then
-              echo "- install: $INSTALL_URL"
+            if [[ -n "${ARTIFACT_ID:-}" ]]; then
+              echo "- OTA artifact id: \`$ARTIFACT_ID\` (open via control-plane Status on your tailnet — full URL omitted from public logs)"
             fi
             if [[ "$DEPLOY_MODE" == "testflight" ]]; then
               echo "- TestFlight: check App Store Connect / TestFlight app after processing"

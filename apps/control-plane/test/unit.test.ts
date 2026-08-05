@@ -164,6 +164,20 @@ test("redact strips BSL_KEYCHAIN_PASSWORD including short values", () => {
   }
 });
 
+test("childEnvForScript only passes keychain password to build-ios.sh", async () => {
+  const { childEnvForScript } = await import("../src/localDeploy.js");
+  const base = {
+    PATH: "/usr/bin",
+    BSL_KEYCHAIN_PASSWORD: "sekrit-pass",
+    OTHER: "1",
+  };
+  const forBuild = childEnvForScript("build-ios.sh", base);
+  assert.equal(forBuild.BSL_KEYCHAIN_PASSWORD, "sekrit-pass");
+  const forInstall = childEnvForScript("install-direct.sh", base);
+  assert.equal(forInstall.BSL_KEYCHAIN_PASSWORD, undefined);
+  assert.equal(forInstall.OTHER, "1");
+});
+
 test("DeployGate enforces single flight and cooldown", () => {
   const gate = new DeployGate(60_000);
   assert.equal(gate.tryAcquire().ok, true);

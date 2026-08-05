@@ -605,6 +605,10 @@ code {
   line-height: 1.4;
 }
 
+.hint.warn-inline {
+  color: var(--warn, #b45309);
+}
+
 /* ——— Calm UX: steps, disclosure, job hero ——— */
 .step {
   margin-bottom: 1.15rem;

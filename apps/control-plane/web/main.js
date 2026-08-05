@@ -554,7 +554,7 @@ function renderProjects() {
   const modeHelp = {
     ota:
       state.platform === "watchos"
-        ? "Ad Hoc IPA over Tailscale. Register the Watch UDID. Companion Watch apps usually ship inside an iPhone build."
+        ? "Safari itms-services is iPhone-oriented — prefer Direct to a paired Watch. Companion Watch apps usually ship inside an iPhone build."
         : "Install over Tailscale from the couch.",
     direct:
       state.platform === "watchos"
@@ -566,6 +566,9 @@ function renderProjects() {
         ? "Upload for TestFlight. Watch-only apps usually need an iOS container scheme."
         : "Upload to TestFlight for installs anywhere.",
   };
+  const watchOtaWarn =
+    state.platform === "watchos" &&
+    (state.deployMode === "ota" || state.deployMode === "both");
 
   const summaryBits = [
     state.platform === "watchos" ? "watchOS" : "iOS",
@@ -616,6 +619,11 @@ function renderProjects() {
             ? "OTA + Direct selected in Advanced."
             : modeHelp[state.deployMode] || "",
         )}</p>
+        ${
+          watchOtaWarn
+            ? `<p class="hint warn-inline">Watch + OTA is often a dead end on the Watch itself — switch to <strong>This device</strong> (Direct) unless you know you need the IPA page.</p>`
+            : ""
+        }
       </div>
 
       <button class="primary" id="deployBtn" ${state.busy || !state.scheme || !state.selectedRepo ? "disabled" : ""}>

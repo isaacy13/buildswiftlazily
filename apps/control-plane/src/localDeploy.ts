@@ -191,16 +191,33 @@ function assertNoSymlinkEscape(root: string): void {
   }
 }
 
+/**
+ * Env for spawned build scripts. By default strip the login keychain password so
+ * install/OTA/TestFlight children (and any Xcode Run Scripts they might wrap)
+ * never inherit it. Only `build-ios.sh` needs the password for unlock.
+ */
+export function childEnvForScript(
+  scriptBasename: string,
+  base: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env = { ...base };
+  if (scriptBasename !== "build-ios.sh") {
+    delete env.BSL_KEYCHAIN_PASSWORD;
+  }
+  return env;
+}
+
 async function runScript(
   jobId: string,
   jobs: JobStore,
   script: string,
   args: string[],
 ): Promise<{ stdout: string; stderr: string }> {
-  jobs.appendLog(jobId, `$ ${path.basename(script)} ${args.join(" ")}`);
+  const basename = path.basename(script);
+  jobs.appendLog(jobId, `$ ${basename} ${args.join(" ")}`);
   try {
     const { stdout, stderr } = await execFileAsync(script, args, {
-      env: { ...process.env },
+      env: childEnvForScript(basename),
       maxBuffer: 20 * 1024 * 1024,
       timeout: 60 * 60 * 1000,
     });
