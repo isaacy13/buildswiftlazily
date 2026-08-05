@@ -1190,6 +1190,16 @@ function bindViewEvents(view) {
   }
 }
 
+/** Stable identity for #view content; scroll is kept only across same-key renders. */
+let lastScrollViewKey = "";
+function scrollViewKey() {
+  if (state.tab === "cursor") {
+    if (state.openingAgentId || state.agentDetail) return "cursor:detail";
+    return "cursor:list";
+  }
+  return state.tab;
+}
+
 function render() {
   renderShellOnce();
 
@@ -1229,9 +1239,11 @@ function render() {
 
   const view = app.querySelector("#view");
   if (!view) return;
-  const scrollTop = view.scrollTop;
+  const key = scrollViewKey();
+  const scrollTop = key === lastScrollViewKey ? view.scrollTop : 0;
   view.innerHTML = body;
   view.scrollTop = scrollTop;
+  lastScrollViewKey = key;
   bindViewEvents(view);
 }
 
