@@ -223,6 +223,59 @@ test("deploy rejects unsafe scheme", async () => {
   assert.equal(res.status, 400);
 });
 
+test("second deploy while inflight returns 429 with reattach jobId", async () => {
+  process.env.BSL_DRY_RUN = "1";
+  const jobs = new JobStore();
+  // Slow the first job by stubbing nothing — gate holds until finally().
+  // Start one deploy, then immediately POST again before it finishes.
+  const { app } = createApp({ env: testEnv(), repoConfig, jobs });
+
+  const first = await app.request("/api/deploy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      repository: "isaacy13/GuideAI",
+      ref: "main",
+      scheme: "GuideAI",
+      deploy_mode: "ota",
+      engine: "local",
+    }),
+  });
+  assert.equal(first.status, 200);
+  const firstBody = await first.json();
+  assert.ok(firstBody.jobId);
+
+  const second = await app.request("/api/deploy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      repository: "isaacy13/GuideAI",
+      ref: "main",
+      scheme: "GuideAI",
+      deploy_mode: "ota",
+      engine: "local",
+    }),
+  });
+  assert.equal(second.status, 429);
+  const blocked = await second.json();
+  assert.match(blocked.error, /already in progress/i);
+  assert.equal(blocked.reattach, true);
+  assert.equal(blocked.jobId, firstBody.jobId);
+
+  const list = await app.request("/api/jobs");
+  assert.equal(list.status, 200);
+  const listed = await list.json();
+  assert.equal(listed.liveJobId, firstBody.jobId);
+
+  // Wait for first job so gate releases (avoid leaking into other tests)
+  let job = jobs.get(firstBody.jobId)!;
+  for (let i = 0; i < 40 && job.status !== "succeeded" && job.status !== "failed"; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    job = jobs.get(firstBody.jobId)!;
+  }
+  delete process.env.BSL_DRY_RUN;
+});
+
 test("runScript streams lines into the job log before exit", async () => {
   const jobs = new JobStore();
   const job = jobs.create({

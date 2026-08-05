@@ -94,13 +94,21 @@ export function apiTokenOk(expected: string, provided: string | null): boolean {
 export class DeployGate {
   private inflight = false;
   private lastStartMs = 0;
+  private inflightJobId: string | null = null;
 
   constructor(private readonly cooldownMs = 15_000) {}
 
-  tryAcquire(): { ok: true } | { ok: false; retryAfterSec: number; reason: string } {
+  tryAcquire():
+    | { ok: true }
+    | { ok: false; retryAfterSec: number; reason: string; jobId?: string } {
     const now = Date.now();
     if (this.inflight) {
-      return { ok: false, retryAfterSec: 30, reason: "A deploy is already in progress" };
+      return {
+        ok: false,
+        retryAfterSec: 30,
+        reason: "A deploy is already in progress",
+        jobId: this.inflightJobId || undefined,
+      };
     }
     const since = now - this.lastStartMs;
     if (this.lastStartMs && since < this.cooldownMs) {
@@ -109,6 +117,7 @@ export class DeployGate {
         ok: false,
         retryAfterSec,
         reason: `Deploy cooldown — try again in ${retryAfterSec}s`,
+        jobId: this.inflightJobId || undefined,
       };
     }
     this.inflight = true;
@@ -116,7 +125,13 @@ export class DeployGate {
     return { ok: true };
   }
 
+  /** Attach the job id once the local deploy is queued (for reattach on 429). */
+  bindJob(jobId: string): void {
+    this.inflightJobId = jobId;
+  }
+
   release(): void {
     this.inflight = false;
+    this.inflightJobId = null;
   }
 }

@@ -21,6 +21,7 @@ import {
   buildManifestPlist,
 } from "../src/ota.js";
 import { apiTokenOk, DeployGate, publicError, redact } from "../src/security.js";
+import { JobStore } from "../src/jobs.js";
 
 test("detectXcodeProjects finds workspace, skips Pods, hints watchOS", () => {
   const paths = [
@@ -188,9 +189,37 @@ test("childEnvForScript only passes keychain password to build-ios.sh", async ()
 test("DeployGate enforces single flight and cooldown", () => {
   const gate = new DeployGate(60_000);
   assert.equal(gate.tryAcquire().ok, true);
-  assert.equal(gate.tryAcquire().ok, false);
+  gate.bindJob("job-1");
+  const blocked = gate.tryAcquire();
+  assert.equal(blocked.ok, false);
+  if (!blocked.ok) {
+    assert.match(blocked.reason, /already in progress/i);
+    assert.equal(blocked.jobId, "job-1");
+  }
   gate.release();
   const again = gate.tryAcquire();
   assert.equal(again.ok, false);
   if (!again.ok) assert.ok(again.retryAfterSec > 0);
+});
+
+test("JobStore.findLive returns newest queued/running job", () => {
+  const jobs = new JobStore();
+  jobs.create({
+    engine: "local",
+    repository: "a/b",
+    ref: "main",
+    scheme: "App",
+    deployMode: "ota",
+    status: "succeeded",
+  });
+  assert.equal(jobs.findLive(), undefined);
+  const live = jobs.create({
+    engine: "local",
+    repository: "a/b",
+    ref: "main",
+    scheme: "App",
+    deployMode: "ota",
+    status: "running",
+  });
+  assert.equal(jobs.findLive()?.id, live.id);
 });

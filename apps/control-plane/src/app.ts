@@ -236,8 +236,15 @@ export function createApp(deps: AppDeps) {
   app.post("/api/deploy", async (c) => {
     const gate = deployGate.tryAcquire();
     if (!gate.ok) {
+      const live = jobs.findLive();
+      const jobId = gate.jobId || live?.id;
       return c.json(
-        { error: gate.reason, retryAfterSec: gate.retryAfterSec },
+        {
+          error: gate.reason,
+          retryAfterSec: gate.retryAfterSec,
+          jobId: jobId || null,
+          reattach: Boolean(jobId),
+        },
         429,
       );
     }
@@ -312,6 +319,7 @@ export function createApp(deps: AppDeps) {
       });
       // Hold the gate until the async local job finishes (single-flight).
       holdGate = true;
+      deployGate.bindJob(job.id);
       void runLocalDeploy(env, jobs, job.id, {
         repository,
         ref,
@@ -335,7 +343,10 @@ export function createApp(deps: AppDeps) {
     }
   });
 
-  app.get("/api/jobs", (c) => c.json({ jobs: jobs.list(20) }));
+  app.get("/api/jobs", (c) => {
+    const live = jobs.findLive();
+    return c.json({ jobs: jobs.list(20), liveJobId: live?.id || null });
+  });
   app.get("/api/jobs/:id", (c) => {
     const job = jobs.get(c.req.param("id"));
     if (!job) return c.json({ error: "job not found" }, 404);
