@@ -1,4 +1,5 @@
 const TOKEN_KEY = "bsl_api_token";
+const ACTIVE_JOB_KEY = "bsl_active_job_id";
 
 const state = {
   tab: "projects",
@@ -36,6 +37,58 @@ try {
   state.apiToken = localStorage.getItem(TOKEN_KEY) || "";
 } catch {
   state.apiToken = "";
+}
+
+function rememberActiveJobId(id) {
+  try {
+    if (id) sessionStorage.setItem(ACTIVE_JOB_KEY, id);
+    else sessionStorage.removeItem(ACTIVE_JOB_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function readRememberedJobId() {
+  try {
+    return sessionStorage.getItem(ACTIVE_JOB_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function isLiveJob(job) {
+  return job && (job.status === "queued" || job.status === "running");
+}
+
+function applyJobOutcome(job) {
+  if (!job) return;
+  if (job.status === "succeeded") {
+    if (job.installUrl) state.message = "Build ready — tap Install below.";
+    else if (job.testflightNote) state.message = job.testflightNote;
+    else state.message = "Deploy finished.";
+    state.error = "";
+  } else if (job.status === "failed") {
+    state.error = job.error || "Deploy failed — see log.";
+  }
+}
+
+function adoptJob(job, { resumePoll = false } = {}) {
+  if (!job) return;
+  state.activeJobId = job.id;
+  state.activeJob = job;
+  rememberActiveJobId(job.id);
+
+  if (isLiveJob(job)) {
+    state.busy = true;
+    if (!state.message) state.message = "Live build in progress…";
+    if (resumePoll) {
+      stopPoll();
+      state.pollTimer = setInterval(() => pollJob(job.id), 1500);
+    }
+  } else {
+    state.busy = false;
+    applyJobOutcome(job);
+  }
 }
 
 function authHeaders() {
@@ -90,6 +143,7 @@ async function bootstrap() {
       state.repos[0];
     if (fav) await selectRepo(fav.full_name, fav.default_branch || "main", fav);
     else state.error = "No repos yet — set GuideAI in config/repos.yaml and GITHUB_TOKEN in .env";
+    await resumeActiveJob();
   } catch (e) {
     const msg = String(e.message || e);
     if (/unauthorized/i.test(msg) && !state.apiToken) {
@@ -102,6 +156,45 @@ async function bootstrap() {
     }
   }
   render();
+}
+
+async function resumeActiveJob() {
+  let remembered = null;
+  const rememberedId = readRememberedJobId();
+  if (rememberedId) {
+    try {
+      remembered = await api(`/api/jobs/${encodeURIComponent(rememberedId)}`);
+    } catch {
+      rememberActiveJobId("");
+    }
+  }
+
+  let jobs = state.jobs || [];
+  try {
+    const data = await api("/api/jobs");
+    jobs = data.jobs || [];
+    state.jobs = jobs;
+  } catch {
+    /* keep going with remembered job if any */
+  }
+
+  const live =
+    (remembered && isLiveJob(remembered) ? remembered : null) ||
+    jobs.find((j) => isLiveJob(j)) ||
+    null;
+
+  if (live) {
+    adoptJob(live, { resumePoll: true });
+    await pollJob(live.id);
+    return;
+  }
+
+  // No live job — still restore the last finished card (Install / logs) if we have one.
+  const finished =
+    (remembered && !isLiveJob(remembered) ? remembered : null) ||
+    jobs.find((j) => j.engine === "local") ||
+    null;
+  if (finished) adoptJob(finished);
 }
 
 async function selectRepo(fullName, preferredRef, meta) {
@@ -152,21 +245,15 @@ async function pollJob(jobId) {
   try {
     const job = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
     state.activeJob = job;
+    state.activeJobId = job.id;
+    rememberActiveJobId(job.id);
     if (job.status === "succeeded" || job.status === "failed") {
       stopPoll();
       state.busy = false;
-      if (job.status === "succeeded") {
-        if (job.installUrl) {
-          state.message = "Build ready — tap Install below.";
-        } else if (job.testflightNote) {
-          state.message = job.testflightNote;
-        } else {
-          state.message = "Deploy finished.";
-        }
-      } else {
-        state.error = job.error || "Deploy failed — see log.";
-      }
+      applyJobOutcome(job);
       await loadStatus();
+    } else {
+      state.busy = true;
     }
   } catch (e) {
     state.error = String(e.message || e);
@@ -186,6 +273,7 @@ async function deploy() {
   state.error = "";
   state.message = "";
   state.activeJob = null;
+  state.activeJobId = null;
   stopPoll();
   render();
   try {
@@ -203,6 +291,7 @@ async function deploy() {
     });
     state.message = result.message;
     state.activeJobId = result.jobId;
+    rememberActiveJobId(result.jobId);
     if (result.engine === "local" && result.jobId) {
       state.pollTimer = setInterval(() => pollJob(result.jobId), 1500);
       await pollJob(result.jobId);
