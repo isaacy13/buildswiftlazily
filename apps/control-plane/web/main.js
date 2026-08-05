@@ -45,8 +45,9 @@ try {
 
 function rememberActiveJobId(id) {
   try {
-    if (id) sessionStorage.setItem(ACTIVE_JOB_KEY, id);
-    else sessionStorage.removeItem(ACTIVE_JOB_KEY);
+    // localStorage survives Safari refresh / PWA relaunch better than sessionStorage
+    if (id) localStorage.setItem(ACTIVE_JOB_KEY, id);
+    else localStorage.removeItem(ACTIVE_JOB_KEY);
   } catch {
     /* ignore */
   }
@@ -54,7 +55,11 @@ function rememberActiveJobId(id) {
 
 function readRememberedJobId() {
   try {
-    return sessionStorage.getItem(ACTIVE_JOB_KEY) || "";
+    return (
+      localStorage.getItem(ACTIVE_JOB_KEY) ||
+      sessionStorage.getItem(ACTIVE_JOB_KEY) ||
+      ""
+    );
   } catch {
     return "";
   }
@@ -76,7 +81,7 @@ function applyJobOutcome(job) {
   }
 }
 
-function adoptJob(job, { resumePoll = false } = {}) {
+function adoptJob(job, { resumePoll = false, message } = {}) {
   if (!job) return;
   state.activeJobId = job.id;
   state.activeJob = job;
@@ -84,7 +89,10 @@ function adoptJob(job, { resumePoll = false } = {}) {
 
   if (isLiveJob(job)) {
     state.busy = true;
-    if (!state.message) state.message = "Live build in progress…";
+    state.showLogs = true;
+    state.message =
+      message || state.message || "Live build in progress…";
+    state.error = "";
     if (resumePoll) {
       stopPoll();
       state.pollTimer = setInterval(() => pollJob(job.id), 1500);
@@ -107,7 +115,12 @@ async function api(path, opts) {
     headers: { ...authHeaders(), ...(opts?.headers || {}) },
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) {
+    const err = new Error(data.error || res.statusText);
+    err.status = res.status;
+    err.payload = data;
+    throw err;
+  }
   return data;
 }
 
@@ -147,7 +160,6 @@ async function bootstrap() {
       state.repos[0];
     if (fav) await selectRepo(fav.full_name, fav.default_branch || "main", fav);
     else state.error = "No repos yet — set GuideAI in config/repos.yaml and GITHUB_TOKEN in .env";
-    await resumeActiveJob();
   } catch (e) {
     const msg = String(e.message || e);
     if (/unauthorized/i.test(msg) && !state.apiToken) {
@@ -158,6 +170,12 @@ async function bootstrap() {
     } else {
       state.error = msg;
     }
+  }
+  // Always attempt reattach — even if earlier bootstrap steps failed.
+  try {
+    await resumeActiveJob();
+  } catch {
+    /* ignore */
   }
   render();
 }
@@ -174,21 +192,49 @@ async function resumeActiveJob() {
   }
 
   let jobs = state.jobs || [];
+  let liveJobId = null;
   try {
     const data = await api("/api/jobs");
     jobs = data.jobs || [];
     state.jobs = jobs;
+    liveJobId = data.liveJobId || null;
   } catch {
     /* keep going with remembered job if any */
   }
 
-  const live =
-    (remembered && isLiveJob(remembered) ? remembered : null) ||
-    jobs.find((j) => isLiveJob(j)) ||
-    null;
+  let live = null;
+  if (liveJobId) {
+    live =
+      (remembered && remembered.id === liveJobId ? remembered : null) ||
+      jobs.find((j) => j.id === liveJobId) ||
+      null;
+    if (!live) {
+      try {
+        live = await api(`/api/jobs/${encodeURIComponent(liveJobId)}`);
+      } catch {
+        live = null;
+      }
+    }
+  }
+  if (!live) {
+    live =
+      (remembered && isLiveJob(remembered) ? remembered : null) ||
+      jobs.find((j) => isLiveJob(j)) ||
+      null;
+  }
 
-  if (live) {
-    adoptJob(live, { resumePoll: true });
+  if (live && isLiveJob(live)) {
+    // Prefer a fresh fetch so logs are complete after refresh.
+    try {
+      const fresh = await api(`/api/jobs/${encodeURIComponent(live.id)}`);
+      live = fresh;
+    } catch {
+      /* use list copy */
+    }
+    adoptJob(live, {
+      resumePoll: true,
+      message: "Reattached to build in progress…",
+    });
     await pollJob(live.id);
     return;
   }
@@ -198,7 +244,15 @@ async function resumeActiveJob() {
     (remembered && !isLiveJob(remembered) ? remembered : null) ||
     jobs.find((j) => j.engine === "local") ||
     null;
-  if (finished) adoptJob(finished);
+  if (finished) {
+    // Refresh finished job so Install URL / full logs survive a reload.
+    try {
+      const fresh = await api(`/api/jobs/${encodeURIComponent(finished.id)}`);
+      adoptJob(fresh);
+    } catch {
+      adoptJob(finished);
+    }
+  }
 }
 
 async function selectRepo(fullName, preferredRef, meta) {
@@ -283,9 +337,8 @@ async function deploy() {
   state.busy = true;
   state.error = "";
   state.message = "";
-  state.activeJob = null;
-  state.activeJobId = null;
-  stopPoll();
+  // Keep the current job card visible until a new job actually starts.
+  // If the gate says a deploy is already running, we reattach instead.
   render();
   try {
     const result = await api("/api/deploy", {
@@ -303,8 +356,11 @@ async function deploy() {
     });
     state.message = result.message;
     state.activeJobId = result.jobId;
+    state.activeJob = null;
     rememberActiveJobId(result.jobId);
+    stopPoll();
     if (result.engine === "local" && result.jobId) {
+      state.showLogs = true;
       state.pollTimer = setInterval(() => pollJob(result.jobId), 1500);
       await pollJob(result.jobId);
     } else {
@@ -313,6 +369,38 @@ async function deploy() {
       render();
     }
   } catch (e) {
+    const payload = e.payload || {};
+    const reattachId = payload.jobId || null;
+    const shouldReattach =
+      Boolean(payload.reattach && reattachId) ||
+      /already in progress/i.test(String(e.message || ""));
+
+    if (shouldReattach) {
+      try {
+        if (reattachId) {
+          const job = await api(`/api/jobs/${encodeURIComponent(reattachId)}`);
+          adoptJob(job, {
+            resumePoll: true,
+            message: "Reattached to build in progress…",
+          });
+          await pollJob(job.id);
+          return;
+        }
+        await resumeActiveJob();
+        if (state.activeJob && isLiveJob(state.activeJob)) {
+          state.message = "Reattached to build in progress…";
+          state.error = "";
+          render();
+          return;
+        }
+      } catch (reattachErr) {
+        state.error = String(reattachErr.message || reattachErr);
+        state.busy = false;
+        render();
+        return;
+      }
+    }
+
     state.error = String(e.message || e);
     state.busy = false;
     render();

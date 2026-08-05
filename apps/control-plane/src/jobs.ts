@@ -58,6 +58,15 @@ export class JobStore {
     return this.order.slice(0, limit).map((id) => this.jobs.get(id)!).filter(Boolean);
   }
 
+  /** Most recent queued/running job, if any (for PWA reattach after refresh). */
+  findLive(): DeployJob | undefined {
+    for (const id of this.order) {
+      const job = this.jobs.get(id);
+      if (job && (job.status === "queued" || job.status === "running")) return job;
+    }
+    return undefined;
+  }
+
   appendLog(id: string, line: string): void {
     const job = this.jobs.get(id);
     if (!job) return;
