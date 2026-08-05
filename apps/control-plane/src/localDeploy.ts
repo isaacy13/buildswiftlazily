@@ -10,6 +10,7 @@ import {
   assertSafeBundleVersion,
   assertSafeConfiguration,
   assertSafeDeployMode,
+  assertSafePlatform,
   assertSafeRef,
   assertSafeRelPath,
   assertSafeRepo,
@@ -73,6 +74,7 @@ export type LocalDeployInput = {
   scheme: string;
   configuration?: string;
   deploy_mode?: "ota" | "direct" | "both" | "testflight";
+  platform?: "ios" | "watchos";
   title?: string;
 };
 
@@ -228,11 +230,15 @@ export async function runLocalDeploy(
   const projectPath = assertSafeRelPath(input.project_path || ".");
   const scheme = assertSafeScheme(input.scheme);
   const mode = assertSafeDeployMode(input.deploy_mode || "ota");
+  const platform = assertSafePlatform(input.platform || "ios");
   const configuration = assertSafeConfiguration(input.configuration || "Release");
   const title = assertSafeTitle(input.title || scheme);
 
-  jobs.patch(jobId, { status: "running" });
-  jobs.appendLog(jobId, `Local deploy ${repository}@${ref} scheme=${scheme} mode=${mode}`);
+  jobs.patch(jobId, { status: "running", platform });
+  jobs.appendLog(
+    jobId,
+    `Local deploy ${repository}@${ref} scheme=${scheme} mode=${mode} platform=${platform}`,
+  );
 
   const forceDry = process.env.BSL_DRY_RUN === "1";
   const dry = forceDry || !hasXcodebuild();
@@ -305,6 +311,8 @@ export async function runLocalDeploy(
       scheme,
       "--configuration",
       configuration,
+      "--platform",
+      platform,
       "--out-dir",
       outDir,
       "--mode",
@@ -327,9 +335,12 @@ export async function runLocalDeploy(
           if (!resolved.startsWith(path.resolve(outDir) + path.sep)) {
             throw new Error("App path escapes build output directory");
           }
+          const deviceClass = platform === "watchos" ? "watch" : "phone";
           await runScript(jobId, jobs, path.join(REPO_ROOT, "scripts/install-direct.sh"), [
             "--app",
             resolved,
+            "--device-class",
+            deviceClass,
           ]);
         }
       }

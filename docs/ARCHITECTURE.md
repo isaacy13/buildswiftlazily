@@ -7,11 +7,12 @@ buildswiftlazily is a **single-operator** Mac-hosted control plane plus shell sc
 | Path | Responsibility |
 |------|----------------|
 | `apps/control-plane` | TypeScript (Hono) API + Vite PWA. Job store in memory. Serves `/api/*`, static UI, and `/ota/*` artifacts. |
-| `scripts/build-ios.sh` | `xcodebuild` archive + export (Ad Hoc or App Store). |
+| `scripts/build-ios.sh` | `xcodebuild` archive + export for **iOS or watchOS** (`--platform`). |
 | `scripts/serve-ota.sh` | Copy IPA + write `manifest.plist` / install HTML under the artifact www root; ensure Tailscale Serve. |
 | `scripts/serve-control.sh` | Point `tailscale serve` at the control plane port. |
 | `scripts/upload-testflight.sh` | `xcrun altool` upload with App Store Connect API key. |
-| `scripts/install-direct.sh` | `devicectl` install/launch on a paired device. |
+| `scripts/install-direct.sh` | `devicectl` install/launch on a paired **iPhone or Apple Watch**. |
+| `scripts/prepare-keychain.sh` | One-time unattended codesign Keychain prep. |
 | `scripts/bootstrap.sh` / `start.sh` / `doctor.sh` | First-run, launch, and host checks. |
 | `.github/workflows/deploy-ios.yml` | Optional remote path: self-hosted Mac runner runs the same scripts. |
 

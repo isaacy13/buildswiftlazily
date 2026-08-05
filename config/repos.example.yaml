@@ -25,5 +25,6 @@ repos:
     # Optional overrides once you know them:
     # project_path: .
     # scheme: YourApp
+    # platform: ios          # or watchos for independent Watch schemes
     # bundle_id: com.example.YourApp
     favorite: true

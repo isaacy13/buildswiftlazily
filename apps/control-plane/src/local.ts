@@ -10,6 +10,7 @@ export async function listDevices(): Promise<{
   available: boolean;
   raw: string;
   phones: string[];
+  watches: string[];
 }> {
   try {
     const { stdout } = await execFileAsync(
@@ -17,16 +18,16 @@ export async function listDevices(): Promise<{
       ["devicectl", "list", "devices"],
       { timeout: 15_000 },
     );
-    const phones = stdout
-      .split("\n")
-      .filter((l) => /iphone/i.test(l))
-      .map((l) => l.trim());
-    return { available: true, raw: stdout, phones };
+    const lines = stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+    const phones = lines.filter((l) => /iphone|ipod/i.test(l) && !/watch/i.test(l));
+    const watches = lines.filter((l) => /watch/i.test(l));
+    return { available: true, raw: stdout, phones, watches };
   } catch (e) {
     return {
       available: false,
       raw: e instanceof Error ? e.message : String(e),
       phones: [],
+      watches: [],
     };
   }
 }

@@ -7,10 +7,11 @@ usage() {
 Usage: build-ios.sh --root <checkout> --scheme <name> [options]
 
 Options:
-  --root PATH           Path to iOS project checkout (required)
+  --root PATH           Path to Xcode project checkout (required)
   --scheme NAME         Xcode scheme (required)
   --project-path REL    Relative path inside root to .xcodeproj/.xcworkspace dir (default .)
   --configuration NAME  Debug|Release (default Release)
+  --platform ios|watchos  Archive destination platform (default ios)
   --team-id ID          Apple Team ID (or BSL_TEAM_ID)
   --bundle-id ID        Override bundle id for ExportOptions (optional)
   --out-dir PATH        Output directory for IPA/app (required)
@@ -23,6 +24,7 @@ ROOT=""
 SCHEME=""
 PROJECT_PATH="."
 CONFIGURATION="${BSL_CONFIGURATION:-Release}"
+PLATFORM="${BSL_PLATFORM:-ios}"
 TEAM_ID="${BSL_TEAM_ID:-}"
 BUNDLE_ID=""
 OUT_DIR=""
@@ -35,6 +37,7 @@ while [[ $# -gt 0 ]]; do
     --scheme) SCHEME="$2"; shift 2 ;;
     --project-path) PROJECT_PATH="$2"; shift 2 ;;
     --configuration) CONFIGURATION="$2"; shift 2 ;;
+    --platform) PLATFORM="$2"; shift 2 ;;
     --team-id) TEAM_ID="$2"; shift 2 ;;
     --bundle-id) BUNDLE_ID="$2"; shift 2 ;;
     --out-dir) OUT_DIR="$2"; shift 2 ;;
@@ -63,6 +66,11 @@ if [[ ! "$SCHEME" =~ ^[A-Za-z0-9._+\ -]+$ ]]; then
 fi
 if [[ ! "$CONFIGURATION" =~ ^[A-Za-z0-9._+-]+$ ]]; then
   echo "Invalid configuration: $CONFIGURATION" >&2
+  exit 2
+fi
+PLATFORM="$(printf '%s' "$PLATFORM" | tr '[:upper:]' '[:lower:]')"
+if [[ "$PLATFORM" != "ios" && "$PLATFORM" != "watchos" ]]; then
+  echo "Invalid platform (expected ios or watchos): $PLATFORM" >&2
   exit 2
 fi
 if [[ -n "$TEAM_ID" && ! "$TEAM_ID" =~ ^[A-Za-z0-9]{10}$ ]]; then
@@ -122,14 +130,19 @@ APP_DIR="$OUT_DIR/app"
 rm -rf "$EXPORT_DIR" "$APP_DIR"
 mkdir -p "$EXPORT_DIR" "$APP_DIR"
 
-XCODE_ARGS=( -scheme "$SCHEME" -configuration "$CONFIGURATION" -destination "generic/platform=iOS" -archivePath "$ARCHIVE_PATH" )
+XCODE_DEST="generic/platform=iOS"
+if [[ "$PLATFORM" == "watchos" ]]; then
+  XCODE_DEST="generic/platform=watchOS"
+fi
+
+XCODE_ARGS=( -scheme "$SCHEME" -configuration "$CONFIGURATION" -destination "$XCODE_DEST" -archivePath "$ARCHIVE_PATH" )
 if [[ -n "$WORKSPACE" ]]; then
   XCODE_ARGS=( -workspace "$WORKSPACE" "${XCODE_ARGS[@]}" )
 else
   XCODE_ARGS=( -project "$PROJECT" "${XCODE_ARGS[@]}" )
 fi
 
-echo "Building archive…"
+echo "Building archive (platform=$PLATFORM destination=$XCODE_DEST)…"
 # Prefer automatic signing updates on personal Mac runner
 if [[ "$DRY_RUN" != "1" ]]; then
   if ! bsl_unlock_keychain_for_build; then
@@ -231,4 +244,4 @@ if [[ "$MODE" == "testflight" ]]; then
   export_ipa "app-store"
 fi
 
-echo "BUILD_OK out=$OUT_DIR mode=$MODE"
+echo "BUILD_OK out=$OUT_DIR mode=$MODE platform=$PLATFORM"

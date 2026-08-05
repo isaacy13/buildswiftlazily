@@ -7,6 +7,7 @@ import {
   assertSafeBundleVersion,
   assertSafeConfiguration,
   assertSafeDeployMode,
+  assertSafePlatform,
   assertSafeRef,
   assertSafeRelPath,
   assertSafeRepo,
@@ -21,17 +22,27 @@ import {
 } from "../src/ota.js";
 import { apiTokenOk, DeployGate, publicError, redact } from "../src/security.js";
 
-test("detectIosProjects finds workspace and skips Pods", () => {
+test("detectXcodeProjects finds workspace, skips Pods, hints watchOS", () => {
   const paths = [
     "GuideAI.xcodeproj/project.pbxproj",
     "GuideAI.xcworkspace/contents.xcworkspacedata",
     "Pods/Some.xcodeproj/project.pbxproj",
     "Features/Foo/Foo.xcodeproj/project.pbxproj",
+    "WatchApp/MyWatch Watch App.xcodeproj/project.pbxproj",
   ];
   const found = detectIosProjects(paths, 4);
   assert.ok(found.some((f) => f.name === "GuideAI" && f.kind === "workspace"));
   assert.ok(!found.some((f) => f.projectPath.includes("Pods")));
   assert.ok(found.some((f) => f.projectPath === "Features/Foo"));
+  const watch = found.find((f) => /watch/i.test(f.name));
+  assert.ok(watch);
+  assert.ok(watch.platforms.includes("watchos"));
+});
+
+test("assertSafePlatform accepts ios and watchos", () => {
+  assert.equal(assertSafePlatform("ios"), "ios");
+  assert.equal(assertSafePlatform("watchOS"), "watchos");
+  assert.throws(() => assertSafePlatform("tvos"));
 });
 
 test("assertSafeRepo accepts owner/name only", () => {

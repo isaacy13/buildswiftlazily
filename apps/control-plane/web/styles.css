@@ -639,6 +639,10 @@ code {
   grid-template-columns: repeat(3, 1fr);
 }
 
+.seg-2 {
+  grid-template-columns: 1fr 1fr;
+}
+
 .disclosure {
   display: inline-flex;
   align-items: center;

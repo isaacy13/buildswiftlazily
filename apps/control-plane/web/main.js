@@ -14,6 +14,7 @@ const state = {
   scheme: "",
   deployMode: "ota",
   engine: "local",
+  platform: "ios",
   agents: [],
   agentDetail: null,
   deploys: [],
@@ -219,6 +220,9 @@ async function selectRepo(fullName, preferredRef, meta) {
       "main";
     if (meta?.scheme) state.scheme = meta.scheme;
     if (meta?.project_path) state.projectPath = meta.project_path;
+    if (meta?.platform === "watchos" || meta?.platform === "ios") {
+      state.platform = meta.platform;
+    }
     await refreshIos();
   } catch (e) {
     state.error = String(e.message || e);
@@ -235,6 +239,9 @@ async function refreshIos() {
   if (data.warning) state.warning = data.warning;
   if (!state.scheme && data.suggestedScheme) state.scheme = data.suggestedScheme;
   if (data.suggestedPath) state.projectPath = data.suggestedPath;
+  if (data.suggestedPlatform === "watchos" || data.suggestedPlatform === "ios") {
+    state.platform = data.suggestedPlatform;
+  }
   if (!state.scheme) state.showAdvanced = true;
 }
 
@@ -290,6 +297,7 @@ async function deploy() {
         scheme: state.scheme,
         deploy_mode: state.deployMode,
         engine: state.engine,
+        platform: state.platform || "ios",
         title: state.scheme,
       }),
     });
@@ -484,7 +492,7 @@ function renderModeSeg() {
   const modes = [
     { id: "ota", title: "OTA", desc: "Fast · Tailscale" },
     { id: "testflight", title: "TestFlight", desc: "Works anywhere" },
-    { id: "direct", title: "This phone", desc: "Paired to Mac" },
+    { id: "direct", title: "This device", desc: state.platform === "watchos" ? "Paired Watch" : "Paired phone" },
   ];
   // "both" lives in Advanced
   return `<div class="seg seg-3" role="radiogroup" aria-label="How to install">
@@ -497,6 +505,27 @@ function renderModeSeg() {
         }">
           <span class="seg-title">${escapeHtml(m.title)}</span>
           <span class="seg-desc">${escapeHtml(m.desc)}</span>
+        </button>`,
+      )
+      .join("")}
+  </div>`;
+}
+
+function renderPlatformSeg() {
+  const platforms = [
+    { id: "ios", title: "iPhone", desc: "iOS (+ companion Watch)" },
+    { id: "watchos", title: "Apple Watch", desc: "watchOS scheme" },
+  ];
+  return `<div class="seg seg-2" role="radiogroup" aria-label="Device platform">
+    ${platforms
+      .map(
+        (p) => `<button type="button" class="seg-option ${
+          state.platform === p.id ? "active" : ""
+        }" data-platform="${p.id}" role="radio" aria-checked="${
+          state.platform === p.id ? "true" : "false"
+        }">
+          <span class="seg-title">${escapeHtml(p.title)}</span>
+          <span class="seg-desc">${escapeHtml(p.desc)}</span>
         </button>`,
       )
       .join("")}
@@ -523,13 +552,23 @@ function renderProjects() {
 
   const iosProjects = state.ios?.projects || [];
   const modeHelp = {
-    ota: "Install over Tailscale from the couch.",
-    direct: "Install on a phone paired to this Mac.",
+    ota:
+      state.platform === "watchos"
+        ? "Ad Hoc IPA over Tailscale. Register the Watch UDID. Companion Watch apps usually ship inside an iPhone build."
+        : "Install over Tailscale from the couch.",
+    direct:
+      state.platform === "watchos"
+        ? "Install on a Watch paired via Core Device (Developer Mode on)."
+        : "Install on a phone paired to this Mac.",
     both: "OTA page plus direct install if paired.",
-    testflight: "Upload to TestFlight for installs anywhere.",
+    testflight:
+      state.platform === "watchos"
+        ? "Upload for TestFlight. Watch-only apps usually need an iOS container scheme."
+        : "Upload to TestFlight for installs anywhere.",
   };
 
   const summaryBits = [
+    state.platform === "watchos" ? "watchOS" : "iOS",
     state.scheme || null,
     state.projectPath && state.projectPath !== "." ? state.projectPath : null,
   ].filter(Boolean);
@@ -557,6 +596,10 @@ function renderProjects() {
             <label for="branchSelect">Branch</label>
             <select id="branchSelect">${branchOptions || `<option>${escapeHtml(state.selectedRef || "")}</option>`}</select>
           </div>
+        </div>
+        <div class="field" style="margin-top:0.65rem">
+          <label>Device</label>
+          ${renderPlatformSeg()}
         </div>
         ${
           summaryBits.length && !state.showAdvanced
@@ -619,11 +662,16 @@ function renderProjects() {
                 ${iosProjects
                   .map(
                     (p) =>
-                      `<button type="button" class="list-item tappable pick-ios" data-path="${escapeAttr(
+                      `                      <button type="button" class="list-item tappable pick-ios" data-path="${escapeAttr(
                         p.projectPath,
-                      )}" data-scheme="${escapeAttr(p.name)}">
+                      )}" data-scheme="${escapeAttr(p.name)}" data-platform="${escapeAttr(
+                        (p.platforms && p.platforms[0]) || "ios",
+                      )}">
                         <span class="title">${escapeHtml(p.name)}</span>
                         <span class="badge">${escapeHtml(p.kind)}</span>
+                        ${(p.platforms || ["ios"])
+                          .map((pl) => `<span class="badge">${escapeHtml(pl)}</span>`)
+                          .join("")}
                         <div class="muted">${escapeHtml(p.projectPath)}</div>
                       </button>`,
                   )
@@ -712,9 +760,19 @@ function renderStatus() {
     ? `<div class="kv"><span>Tailscale</span><code>${escapeHtml(state.config.tsHost || "unset")}</code></div>
        <div class="kv"><span>Engine</span><code>${escapeHtml(state.config.deployEngine || "local")}</code></div>`
     : "";
-  const devices = state.devices?.phones?.length
-    ? state.devices.phones.map((p) => `<div class="list-item">${escapeHtml(p)}</div>`).join("")
-    : `<p class="muted">None paired — OTA and TestFlight still work.</p>`;
+  const devices = state.devices
+    ? (() => {
+        const phones = state.devices.phones || [];
+        const watches = state.devices.watches || [];
+        if (!phones.length && !watches.length) {
+          return `<p class="muted">None paired — OTA and TestFlight still work.</p>`;
+        }
+        return [
+          ...phones.map((p) => `<div class="list-item"><span class="badge">iPhone</span> ${escapeHtml(p)}</div>`),
+          ...watches.map((w) => `<div class="list-item"><span class="badge">Watch</span> ${escapeHtml(w)}</div>`),
+        ].join("");
+      })()
+    : `<p class="muted">Device probe unavailable.</p>`;
   const localJobs = (state.jobs || []).slice(0, 6);
   const jobsHtml = localJobs.length
     ? localJobs
@@ -887,6 +945,12 @@ function render() {
       render();
     }),
   );
+  app.querySelectorAll("[data-platform]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      state.platform = btn.getAttribute("data-platform") || "ios";
+      render();
+    }),
+  );
   const engineSelect = app.querySelector("#engineSelect");
   if (engineSelect)
     engineSelect.addEventListener("change", (e) => (state.engine = e.target.value));
@@ -896,6 +960,8 @@ function render() {
     btn.addEventListener("click", () => {
       state.projectPath = btn.getAttribute("data-path") || ".";
       state.scheme = btn.getAttribute("data-scheme") || state.scheme;
+      const pl = btn.getAttribute("data-platform");
+      if (pl === "ios" || pl === "watchos") state.platform = pl;
       render();
     }),
   );

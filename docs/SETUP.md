@@ -106,6 +106,26 @@ If a dialog still appears **once** after prepare, click **Always Allow** with a 
 | Keychain password / “codesign wants to…” while you’re on the couch | §1e — `./scripts/prepare-keychain.sh` (+ optional `BSL_KEYCHAIN_PASSWORD`) |
 | `errSecInteractionNotAllowed` / `-25308` / User interaction is not allowed | Keychain locked or ACL not prepared → §1e |
 
+## Platforms (iOS + watchOS)
+
+| Kind | How to build here |
+|------|-------------------|
+| **iPhone app** | Platform **iPhone** (default). Scheme archives `generic/platform=iOS`. |
+| **iPhone + companion Watch** | Still use **iPhone**. Archive the iOS scheme that embeds the Watch app — Apple deploys the Watch piece with/after the phone install. |
+| **Independent / Watch-only** | Platform **Apple Watch**. Scheme must archive for `generic/platform=watchOS`. Prefer **Direct** to a paired Watch (Developer Mode on). TestFlight usually needs an iOS container scheme (modern Xcode “Watch App” templates include one). |
+
+Register the **Watch UDID** in the Apple Developer portal for Ad Hoc, same as iPhones. Pair the Watch, open it once in **Xcode → Devices and Simulators** so the developer disk image mounts, then Direct install can find it.
+
+Pin a Watch app in `config/repos.yaml`:
+
+```yaml
+  - id: mywatch
+    repository: you/MyWatchApp
+    display_name: MyWatch
+    scheme: MyWatch Watch App
+    platform: watchos
+```
+
 ## 2. Tailscale (Mac + iPhone)
 
 1. Same tailnet on Mac and iPhone.

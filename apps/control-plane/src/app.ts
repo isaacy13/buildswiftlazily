@@ -7,6 +7,7 @@ import {
   assertSafeAgentId,
   assertSafeConfiguration,
   assertSafeDeployMode,
+  assertSafePlatform,
   assertSafeRef,
   assertSafeRelPath,
   assertSafeRepo,
@@ -16,7 +17,7 @@ import {
   type Env,
 } from "./config.js";
 import {
-  detectIosProjects,
+  detectXcodeProjects,
   dispatchDeploy,
   getRepoTreePaths,
   getWorkflowRun,
@@ -117,6 +118,7 @@ export function createApp(deps: AppDeps) {
       toolingRepo: env.toolingRepo,
       deployEngine: env.deployEngine,
       modes: ["ota", "direct", "both", "testflight"],
+      platforms: ["ios", "watchos"],
       engines: ["local", "actions"],
       apiAuthRequired: Boolean(env.apiToken) || !env.allowInsecureApi,
     }),
@@ -136,6 +138,7 @@ export function createApp(deps: AppDeps) {
           favorite: Boolean(r.favorite) || r.id === repoConfig.defaults.favorite,
           project_path: r.project_path,
           scheme: r.scheme,
+          platform: r.platform || "ios",
           pinned: true,
         }));
 
@@ -206,16 +209,24 @@ export function createApp(deps: AppDeps) {
           projects: [],
           suggestedScheme: pinned?.scheme || repository.split("/")[1],
           suggestedPath: pinned?.project_path || ".",
+          suggestedPlatform: pinned?.platform || "ios",
           warning: "No GitHub token — cannot scan tree; set scheme manually",
         });
       }
       const paths = await getRepoTreePaths(env, repository, ref);
-      const projects = detectIosProjects(paths, repoConfig.discovery.scan_depth);
+      const projects = detectXcodeProjects(paths, repoConfig.discovery.scan_depth);
       const pinned = repoConfig.repos.find((r) => r.repository === repository);
+      const suggestedPlatform =
+        pinned?.platform ||
+        projects.find((p) => p.platforms.includes("watchos") && !p.platforms.includes("ios"))
+          ?.platforms[0] ||
+        projects.find((p) => p.platforms[0] === "watchos")?.platforms[0] ||
+        "ios";
       return c.json({
         projects,
         suggestedScheme: pinned?.scheme || projects[0]?.name || null,
         suggestedPath: pinned?.project_path || projects[0]?.projectPath || ".",
+        suggestedPlatform,
       });
     } catch (e) {
       return c.json({ error: publicError(e) }, 400);
@@ -244,13 +255,20 @@ export function createApp(deps: AppDeps) {
         String(body.deploy_mode || repoConfig.defaults.deploy_mode || "ota"),
       );
       const title = assertSafeTitle(String(body.title || scheme));
+      const platform = assertSafePlatform(
+        String(
+          body.platform ||
+            repoConfig.repos.find((r) => r.repository === repository)?.platform ||
+            "ios",
+        ),
+      );
       const engine =
         body.engine === "actions" || body.engine === "local"
           ? body.engine
           : env.deployEngine;
 
       logInfo(
-        `deploy engine=${engine} repo=${repository} ref=${ref} scheme=${scheme} mode=${deployMode}`,
+        `deploy engine=${engine} repo=${repository} ref=${ref} scheme=${scheme} mode=${deployMode} platform=${platform}`,
       );
 
       if (engine === "actions") {
@@ -261,6 +279,7 @@ export function createApp(deps: AppDeps) {
           scheme,
           configuration,
           deploy_mode: deployMode === "testflight" ? "testflight" : deployMode,
+          platform,
           title,
         });
         const job = jobs.create({
@@ -270,6 +289,7 @@ export function createApp(deps: AppDeps) {
           ref,
           scheme,
           deployMode,
+          platform,
           actionsRunUrl: `https://github.com/${env.toolingRepo}/actions`,
         });
         jobs.appendLog(job.id, result.message);
@@ -288,6 +308,7 @@ export function createApp(deps: AppDeps) {
         ref,
         scheme,
         deployMode,
+        platform,
       });
       // Hold the gate until the async local job finishes (single-flight).
       holdGate = true;
@@ -298,6 +319,7 @@ export function createApp(deps: AppDeps) {
         scheme,
         configuration,
         deploy_mode: deployMode,
+        platform,
         title,
       }).finally(() => deployGate.release());
       return c.json({

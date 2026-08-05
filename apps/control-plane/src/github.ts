@@ -1,6 +1,7 @@
 import {
   assertSafeConfiguration,
   assertSafeDeployMode,
+  assertSafePlatform,
   assertSafeRef,
   assertSafeRelPath,
   assertSafeRepo,
@@ -102,16 +103,25 @@ export async function getRepoTreePaths(
     .map((t) => t.path);
 }
 
-export function detectIosProjects(
+export function detectXcodeProjects(
   paths: string[],
   scanDepth = 4,
-): { projectPath: string; kind: "workspace" | "project"; name: string }[] {
+): {
+  projectPath: string;
+  kind: "workspace" | "project";
+  name: string;
+  platforms: ("ios" | "watchos")[];
+}[] {
   const found: {
     projectPath: string;
     kind: "workspace" | "project";
     name: string;
+    platforms: ("ios" | "watchos")[];
   }[] = [];
   const seen = new Set<string>();
+
+  const watchHint = (name: string, dir: string) =>
+    /watch|watchkit/i.test(`${name} ${dir}`);
 
   for (const p of paths) {
     const parts = p.split("/");
@@ -131,10 +141,15 @@ export function detectIosProjects(
       const key = `${dir}::${kind}::${seg}`;
       if (seen.has(key)) continue;
       seen.add(key);
+      const name = seg.replace(/\.(xcworkspace|xcodeproj)$/, "");
+      const platforms: ("ios" | "watchos")[] = watchHint(name, dir)
+        ? ["watchos", "ios"]
+        : ["ios"];
       found.push({
         projectPath: dir,
         kind,
-        name: seg.replace(/\.(xcworkspace|xcodeproj)$/, ""),
+        name,
+        platforms,
       });
     }
   }
@@ -155,6 +170,9 @@ export function detectIosProjects(
   return result.sort((a, b) => a.projectPath.localeCompare(b.projectPath));
 }
 
+/** @deprecated use detectXcodeProjects */
+export const detectIosProjects = detectXcodeProjects;
+
 export type DeployInput = {
   repository: string;
   ref: string;
@@ -162,6 +180,7 @@ export type DeployInput = {
   scheme: string;
   configuration?: string;
   deploy_mode?: "ota" | "direct" | "both" | "testflight";
+  platform?: "ios" | "watchos";
   title?: string;
 };
 
@@ -175,6 +194,7 @@ export async function dispatchDeploy(
   const scheme = assertSafeScheme(input.scheme);
   const configuration = assertSafeConfiguration(input.configuration || "Release");
   const deploy_mode = assertSafeDeployMode(input.deploy_mode || "ota");
+  const platform = assertSafePlatform(input.platform || "ios");
   const title = assertSafeTitle(input.title || scheme);
   const toolingRepo = assertSafeRepo(env.toolingRepo);
   const toolingRef = assertSafeRef(env.toolingRef);
@@ -188,6 +208,7 @@ export async function dispatchDeploy(
       scheme,
       configuration,
       deploy_mode,
+      platform,
       title,
     },
   };

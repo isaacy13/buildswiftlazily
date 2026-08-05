@@ -21,6 +21,14 @@ on:
         description: "Xcode scheme"
         required: true
         type: string
+      platform:
+        description: "ios | watchos (archive destination)"
+        required: false
+        type: choice
+        options:
+          - ios
+          - watchos
+        default: ios
       configuration:
         description: "Xcode configuration"
         required: false
@@ -63,6 +71,7 @@ jobs:
           PROJECT_PATH: ${{ inputs.project_path }}
           SCHEME: ${{ inputs.scheme }}
           CONFIGURATION: ${{ inputs.configuration }}
+          PLATFORM: ${{ inputs.platform }}
           TITLE: ${{ inputs.title }}
         run: |
           set -euo pipefail
@@ -73,6 +82,7 @@ jobs:
           [[ "$PROJECT_PATH" != *..* ]] || { echo "Invalid project_path"; exit 1; }
           [[ "$SCHEME" =~ ^[A-Za-z0-9._+\ -]+$ ]] || { echo "Invalid scheme"; exit 1; }
           [[ "$CONFIGURATION" =~ ^[A-Za-z0-9._+-]+$ ]] || { echo "Invalid configuration"; exit 1; }
+          [[ "$PLATFORM" == "ios" || "$PLATFORM" == "watchos" || -z "$PLATFORM" ]] || { echo "Invalid platform"; exit 1; }
           # Title may be empty; when set must match scheme-safe charset
           if [[ -n "$TITLE" ]] && [[ ! "$TITLE" =~ ^[A-Za-z0-9._+\ -]+$ ]]; then
             echo "Invalid title"; exit 1
@@ -98,12 +108,13 @@ jobs:
 
       # Pass untrusted workflow_dispatch values only via env — never ${{ inputs.* }}
       # inside shell strings (script-injection).
-      - name: Build iOS
+      - name: Build
         env:
           BSL_TEAM_ID: ${{ secrets.BSL_TEAM_ID || vars.BSL_TEAM_ID }}
           PROJECT_PATH: ${{ inputs.project_path }}
           SCHEME: ${{ inputs.scheme }}
           CONFIGURATION: ${{ inputs.configuration }}
+          PLATFORM: ${{ inputs.platform }}
           DEPLOY_MODE: ${{ inputs.deploy_mode }}
           OUT_DIR: ${{ steps.prep.outputs.out_dir }}
         run: |
@@ -114,6 +125,7 @@ jobs:
             --project-path "$PROJECT_PATH" \
             --scheme "$SCHEME" \
             --configuration "$CONFIGURATION" \
+            --platform "${PLATFORM:-ios}" \
             --out-dir "$OUT_DIR" \
             --mode "$DEPLOY_MODE"
 
@@ -121,6 +133,7 @@ jobs:
         if: ${{ inputs.deploy_mode == 'direct' || inputs.deploy_mode == 'both' }}
         env:
           OUT_DIR: ${{ steps.prep.outputs.out_dir }}
+          PLATFORM: ${{ inputs.platform }}
         run: |
           set -euo pipefail
           APP="$(cut -d= -f2- < "$OUT_DIR/app_path.txt")"
@@ -128,7 +141,9 @@ jobs:
             "$OUT_DIR"/*) ;;
             *) echo "App path escapes out_dir"; exit 1 ;;
           esac
-          tooling/scripts/install-direct.sh --app "$APP"
+          CLASS=phone
+          [[ "${PLATFORM:-ios}" == "watchos" ]] && CLASS=watch
+          tooling/scripts/install-direct.sh --app "$APP" --device-class "$CLASS"
 
       - name: Publish OTA
         id: ota

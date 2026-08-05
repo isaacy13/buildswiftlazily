@@ -13,6 +13,11 @@ echo "$out1" | grep -q 'method=app-store'
 
 out2=$(BSL_DRY_RUN=1 "$ROOT/scripts/build-ios.sh" --root "$TMP/proj" --scheme Demo --out-dir "$OUT" --mode ota --dry-run)
 echo "$out2" | grep -q 'method=ad-hoc'
+echo "$out2" | grep -q 'platform=ios'
+
+out2b=$(BSL_DRY_RUN=1 "$ROOT/scripts/build-ios.sh" --root "$TMP/proj" --scheme Demo --out-dir "$OUT" --mode ota --platform watchos --dry-run)
+echo "$out2b" | grep -q 'generic/platform=watchOS'
+echo "$out2b" | grep -q 'platform=watchos'
 
 echo fake > "$OUT/App.ipa"
 out3=$(BSL_DRY_RUN=1 "$ROOT/scripts/upload-testflight.sh" --ipa "$OUT/App.ipa" --dry-run)
@@ -25,6 +30,9 @@ mkdir -p "$TMP/Demo.app"
 printf '%s\n' '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.demo</string></dict></plist>' > "$TMP/Demo.app/Info.plist"
 out5=$(BSL_DRY_RUN=1 "$ROOT/scripts/install-direct.sh" --app "$TMP/Demo.app" --device test-device --dry-run)
 echo "$out5" | grep -q 'devicectl device install'
+
+out5b=$(BSL_DRY_RUN=1 "$ROOT/scripts/install-direct.sh" --app "$TMP/Demo.app" --device test-device --device-class watch --dry-run)
+echo "$out5b" | grep -q 'class=watch'
 
 # Deeper contract checks (path safety, manifest XML, TEAM_ID guard, etc.)
 "$ROOT/scripts/validate-macos.sh" >/dev/null
