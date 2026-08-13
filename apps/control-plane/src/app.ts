@@ -238,6 +238,9 @@ export function createApp(deps: AppDeps) {
     if (!gate.ok) {
       const live = jobs.findLive();
       const jobId = gate.jobId || live?.id;
+      logInfo(
+        `deploy blocked: ${gate.reason}${jobId ? ` (reattach job=${jobId.slice(0, 8)} status=${live?.status || jobs.get(jobId)?.status || "?"})` : " (no live job id)"}`,
+      );
       return c.json(
         {
           error: gate.reason,
@@ -321,6 +324,9 @@ export function createApp(deps: AppDeps) {
       // Hold the gate until the async local job finishes (single-flight).
       holdGate = true;
       deployGate.bindJob(job.id);
+      logInfo(
+        `deploy queued job=${job.id.slice(0, 8)} — watch Terminal for phase/heartbeat lines (archive + TestFlight can be quiet for a long time)`,
+      );
       void runLocalDeploy(env, jobs, job.id, {
         repository,
         ref,
@@ -330,7 +336,13 @@ export function createApp(deps: AppDeps) {
         deploy_mode: deployMode,
         platform,
         title,
-      }).finally(() => deployGate.releaseIfJob(job.id));
+      }).finally(() => {
+        const finished = jobs.get(job.id);
+        logInfo(
+          `deploy gate released job=${job.id.slice(0, 8)} status=${finished?.status || "?"}`,
+        );
+        deployGate.releaseIfJob(job.id);
+      });
       return c.json({
         engine: "local",
         jobId: job.id,
