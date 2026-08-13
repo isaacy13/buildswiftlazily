@@ -75,6 +75,44 @@ out=$(BSL_DRY_RUN=1 "$ROOT/scripts/upload-testflight.sh" --ipa "$OUT/App.ipa" --
 echo "$out" | grep -q TESTFLIGHT_UPLOAD && pass "upload-testflight dry-run" || bad "upload-testflight dry-run"
 echo "$out" | grep -q 'upload-package' && pass "upload-testflight prefers upload-package" || bad "upload-package missing in dry-run"
 
+python3 - "$TMP/mini.ipa" <<'PY'
+import plistlib, sys, zipfile
+from pathlib import Path
+ipa = Path(sys.argv[1])
+info = {
+    "CFBundleIdentifier": "com.demo.app",
+    "CFBundleVersion": "7",
+    "CFBundleShortVersionString": "1.0",
+}
+with zipfile.ZipFile(ipa, "w") as z:
+    z.writestr("Payload/Demo.app/Info.plist", plistlib.dumps(info))
+PY
+out=$(BSL_DRY_RUN=1 "$ROOT/scripts/upload-testflight.sh" --ipa "$TMP/mini.ipa" --dry-run)
+echo "$out" | grep -q -- '--bundle-id com.demo.app' && pass "upload-package includes --bundle-id" || bad "upload-package missing --bundle-id"
+echo "$out" | grep -q -- '--bundle-version 7' && pass "upload-package includes --bundle-version" || bad "upload-package missing --bundle-version"
+echo "$out" | grep -q -- '--bundle-short-version-string 1.0' && pass "upload-package includes short version" || bad "upload-package missing short version"
+
+# shellcheck source=lib.sh
+source "$ROOT/scripts/lib.sh"
+mkdir -p "$TMP/arch/Demo.app" "$TMP/real.appex"
+echo plugin > "$TMP/real.appex/Info.plist"
+ln -s "$TMP/real.appex" "$TMP/arch/Demo.app/PlugIn.appex"
+if bsl_materialize_bundle_symlinks "$TMP/arch" | grep -q Materialized && [[ ! -L "$TMP/arch/Demo.app/PlugIn.appex" ]]; then
+  pass "materialize bundle symlink before export"
+else
+  bad "materialize bundle symlink"
+fi
+if bsl_assert_ipa_payload "$TMP/mini.ipa" >/dev/null; then
+  pass "assert IPA zip payload"
+else
+  bad "assert IPA zip payload"
+fi
+if bsl_assert_ipa_payload "$OUT/App.ipa" >/dev/null 2>&1; then
+  bad "non-zip IPA should fail payload check"
+else
+  pass "reject non-zip IPA (ITMS-90018)"
+fi
+
 mkdir -p "$TMP/Demo.app"
 echo '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.demo</string></dict></plist>' > "$TMP/Demo.app/Info.plist"
 out=$(BSL_DRY_RUN=1 "$ROOT/scripts/install-direct.sh" --app "$TMP/Demo.app" --device deadbeef-device --dry-run)

@@ -162,3 +162,259 @@ if changed_files == 0:
     print("No Embed Foundation/App Extensions phase reorder needed")
 PY
 }
+
+# Apple ITMS-90018 ("The file extension must be .zip") is the processing email
+# you get when a "bundle" inside the IPA (.app / .appex / .framework / .bundle)
+# is a symlink (often to DerivedData) instead of a real copy. Materialize those
+# in the xcarchive before exportArchive re-signs.
+bsl_materialize_bundle_symlinks() {
+  local root="$1"
+  [[ -d "$root" ]] || return 0
+  python3 - "$root" <<'PY'
+import os, pathlib, shutil, sys
+
+root = pathlib.Path(sys.argv[1])
+suffixes = (".app", ".appex", ".framework", ".bundle", ".xpc")
+
+def is_bundle_like(path: pathlib.Path) -> bool:
+    name = path.name.lower()
+    return any(name.endswith(s) for s in suffixes)
+
+found = []
+for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+    base = pathlib.Path(dirpath)
+    # Do not walk through symlink dirs; we will replace them in-place.
+    keep = []
+    for d in dirnames:
+        p = base / d
+        if p.is_symlink() and is_bundle_like(p):
+            found.append(p)
+        elif not p.is_symlink():
+            keep.append(d)
+    dirnames[:] = keep
+    for name in filenames:
+        p = base / name
+        if p.is_symlink() and is_bundle_like(p):
+            found.append(p)
+
+found.sort(key=lambda p: len(p.parts), reverse=True)
+fixed = 0
+for link in found:
+    raw = os.readlink(link)
+    target = (link.parent / raw).resolve() if not os.path.isabs(raw) else pathlib.Path(raw)
+    if not target.exists():
+        print(
+            f"Dangling bundle symlink (ITMS-90018): {link} -> {raw}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    tmp = link.with_name(link.name + ".bsl-real")
+    if tmp.exists():
+        shutil.rmtree(tmp) if tmp.is_dir() and not tmp.is_symlink() else tmp.unlink()
+    if target.is_dir():
+        shutil.copytree(target, tmp, symlinks=False)
+    else:
+        shutil.copy2(target, tmp)
+    link.unlink()
+    tmp.rename(link)
+    print(f"Materialized bundle symlink {link} <- {target}")
+    fixed += 1
+
+if fixed:
+    print(f"Materialized {fixed} bundle symlink(s) before App Store export")
+else:
+    print("No bundle symlinks to materialize")
+PY
+}
+
+# Confirm an IPA is a zip with Payload/*.app and no leftover bundle-like
+# symlinks (signed IPAs must not be rewritten).
+bsl_assert_ipa_payload() {
+  local ipa="$1"
+  [[ -f "$ipa" ]] || { echo "IPA not found: $ipa" >&2; return 1; }
+  python3 - "$ipa" <<'PY'
+import sys, zipfile
+
+ipa = sys.argv[1]
+suffixes = (".app", ".appex", ".framework", ".bundle", ".xpc")
+
+def is_bundle_like(name: str) -> bool:
+    lower = name.lower().rstrip("/")
+    return any(lower.endswith(s) for s in suffixes)
+
+try:
+    with zipfile.ZipFile(ipa) as z:
+        names = z.namelist()
+except zipfile.BadZipFile:
+    print(
+        f"IPA is not a zip archive (ITMS-90018): {ipa}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+# Payload/Name.app/... (file entries — zip often omits the directory node)
+payload_apps = [
+    n for n in names
+    if n.startswith("Payload/")
+    and any(part.endswith(".app") for part in n.split("/")[1:2])
+]
+if not payload_apps:
+    print(f"IPA missing Payload/*.app: {ipa}", file=sys.stderr)
+    sys.exit(1)
+
+bad = []
+with zipfile.ZipFile(ipa) as z:
+    for info in z.infolist():
+        # Unix symlink: external_attr high bits == 0o120000
+        is_link = ((info.external_attr >> 16) & 0o170000) == 0o120000
+        if not is_link:
+            continue
+        name = info.filename
+        base = name.rstrip("/").split("/")[-1]
+        if is_bundle_like(base) or is_bundle_like(name):
+            bad.append(name)
+
+if bad:
+    print(
+        "IPA contains bundle symlinks (ITMS-90018 — Apple requires a real .zip bundle, not an alias):",
+        file=sys.stderr,
+    )
+    for n in bad[:20]:
+        print(f"  {n}", file=sys.stderr)
+    sys.exit(2)
+
+print("IPA payload looks like a zip with Payload/*.app")
+PY
+}
+
+# Read CFBundleIdentifier / CFBundleVersion / CFBundleShortVersionString from an IPA.
+# Prints: bundle_id<TAB>version<TAB>short_version
+bsl_ipa_bundle_identity() {
+  local ipa="$1"
+  python3 - "$ipa" <<'PY'
+import plistlib, sys, zipfile
+
+ipa = sys.argv[1]
+try:
+    z = zipfile.ZipFile(ipa)
+except Exception:
+    sys.exit(0)
+
+plist_name = None
+for name in z.namelist():
+    parts = name.split("/")
+    if (
+        len(parts) == 3
+        and parts[0] == "Payload"
+        and parts[1].endswith(".app")
+        and parts[2] == "Info.plist"
+    ):
+        plist_name = name
+        break
+if not plist_name:
+    sys.exit(0)
+try:
+    info = plistlib.loads(z.read(plist_name))
+except Exception:
+    sys.exit(0)
+bid = str(info.get("CFBundleIdentifier") or "").strip()
+ver = str(info.get("CFBundleVersion") or "").strip()
+short = str(info.get("CFBundleShortVersionString") or "").strip()
+if bid:
+    print(f"{bid}\t{ver}\t{short}")
+PY
+}
+
+# Pick the App Store Connect numeric Apple ID for a bundle id from altool --list-apps JSON/XML/text.
+bsl_apple_id_from_list_apps() {
+  local bundle_id="$1"
+  local payload
+  payload="$(mktemp)"
+  cat >"$payload"
+  python3 - "$bundle_id" "$payload" <<'PY'
+import json, re, sys, xml.etree.ElementTree as ET
+
+want = (sys.argv[1] or "").strip().lower()
+raw = open(sys.argv[2], encoding="utf-8").read()
+if not want or not raw.strip():
+    sys.exit(1)
+
+def from_mapping(obj):
+    stack = [obj]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            bid = str(
+                cur.get("bundleID")
+                or cur.get("bundleId")
+                or cur.get("bundle-identifier")
+                or cur.get("bundle_id")
+                or ""
+            ).strip().lower()
+            aid = (
+                cur.get("appleId")
+                or cur.get("apple-id")
+                or cur.get("appAdamId")
+                or cur.get("adamId")
+                or cur.get("Apple ID")
+            )
+            if bid == want and aid not in (None, ""):
+                print(str(aid).strip())
+                return True
+            stack.extend(cur.values())
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return False
+
+text = raw.strip()
+if text.startswith("{") or text.startswith("["):
+    try:
+        if from_mapping(json.loads(text)):
+            sys.exit(0)
+    except Exception:
+        pass
+
+try:
+    root = ET.fromstring(text)
+    def plist_to_py(elem):
+        if elem.tag == "dict":
+            d = {}
+            key = None
+            for child in list(elem):
+                if child.tag == "key":
+                    key = (child.text or "").strip()
+                elif key is not None:
+                    d[key] = plist_to_py(child)
+                    key = None
+            return d
+        if elem.tag == "array":
+            return [plist_to_py(c) for c in list(elem)]
+        if elem.tag == "string":
+            return elem.text or ""
+        if elem.tag in ("integer", "real"):
+            return elem.text or ""
+        if elem.tag == "true":
+            return True
+        if elem.tag == "false":
+            return False
+        return {elem.tag: [plist_to_py(c) for c in list(elem)] or (elem.text or "")}
+
+    parsed = plist_to_py(root)
+    if from_mapping(parsed):
+        sys.exit(0)
+except Exception:
+    pass
+
+idx = text.lower().find(want)
+window = text[max(0, idx - 400) : idx + 400] if idx >= 0 else text
+m = re.search(r"(?:apple[\s-]?id|adam[\s-]?id)[\"'\s:=]+(\d{5,})", window, re.I)
+if m:
+    print(m.group(1))
+    sys.exit(0)
+sys.exit(1)
+PY
+  local st
+  st=$?
+  rm -f "$payload"
+  return "$st"
+}
