@@ -1,3 +1,5 @@
+import { filterAndRank, looksLikeRef, matchesQuery } from "../src/search.ts";
+
 const TOKEN_KEY = "bsl_api_token";
 const ACTIVE_JOB_KEY = "bsl_active_job_id";
 const AGENTS_QUERY_KEY = "bsl_agents_query";
@@ -9,9 +11,19 @@ const state = {
   setup: null,
   repos: [],
   branches: [],
+  branchesLoading: false,
   ios: null,
   selectedRepo: null,
   selectedRef: "",
+  repoQuery: "",
+  repoPickerOpen: false,
+  repoHighlight: 0,
+  branchQuery: "",
+  branchPickerOpen: false,
+  branchHighlight: 0,
+  statusQuery: "",
+  iosQuery: "",
+  focusField: null,
   projectPath: ".",
   scheme: "",
   deployMode: "ota",
@@ -163,6 +175,7 @@ function fmtTime(iso) {
 }
 
 function setTab(tab) {
+  closeCombos();
   state.tab = tab;
   render();
   if (tab === "cursor") loadAgents();
@@ -369,12 +382,19 @@ async function selectRepo(fullName, preferredRef, meta) {
     state.message = "";
   }
   state.branches = [];
+  state.branchesLoading = true;
+  state.branchQuery = "";
+  state.branchPickerOpen = false;
+  state.repoQuery = "";
+  state.repoPickerOpen = false;
   state.ios = null;
+  state.iosQuery = "";
   render();
   try {
     const { branches, warning } = await api(`/api/repos/${fullName}/branches`);
     if (warning) state.warning = warning;
     state.branches = branches;
+    state.branchesLoading = false;
     state.selectedRef =
       preferredRef ||
       meta?.default_branch ||
@@ -388,6 +408,7 @@ async function selectRepo(fullName, preferredRef, meta) {
     }
     await refreshIos();
   } catch (e) {
+    state.branchesLoading = false;
     if (!keepLive) state.error = String(e.message || e);
   }
   render();
@@ -690,15 +711,306 @@ function isArchivedAgent(a) {
   return Boolean(a?.archived) || /archiv/i.test(String(a?.status || ""));
 }
 
+function agentSearchText(a) {
+  return `${a.name || ""} ${a.status || ""} ${(a.branches || [])
+    .map((b) => `${b.branch || ""} ${b.repoUrl || ""}`)
+    .join(" ")}`;
+}
+
 function filteredAgents() {
-  const q = state.agentsQuery.trim().toLowerCase();
   return (state.agents || []).filter((a) => {
     if (!state.agentsShowArchived && isArchivedAgent(a)) return false;
-    if (!q) return true;
-    const hay = `${a.name || ""} ${a.status || ""} ${(a.branches || [])
-      .map((b) => `${b.branch || ""} ${b.repoUrl || ""}`)
-      .join(" ")}`.toLowerCase();
-    return hay.includes(q);
+    return matchesQuery(agentSearchText(a), state.agentsQuery);
+  });
+}
+
+const COMBO_LIMIT = 50;
+
+function restoreFocusedField(id, start, end) {
+  const el = app.querySelector(`#${CSS.escape(id)}`);
+  if (!el || typeof el.focus !== "function") return;
+  el.focus();
+  try {
+    if (typeof start === "number" && typeof end === "number") {
+      el.setSelectionRange(start, end);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function rememberFocusFromEl(el) {
+  if (!el?.id) return;
+  state.focusField = {
+    id: el.id,
+    start: el.selectionStart,
+    end: el.selectionEnd,
+  };
+}
+
+function restoreRememberedFocus() {
+  const f = state.focusField;
+  if (!f?.id) return;
+  restoreFocusedField(f.id, f.start, f.end);
+}
+
+function repoSearchText(r) {
+  return `${r.name || ""} ${r.full_name || ""} ${r.description || ""} ${r.scheme || ""}`;
+}
+
+function sortedBranches() {
+  const def =
+    state.repos.find((r) => r.full_name === state.selectedRepo)?.default_branch ||
+    "";
+  const prefer = [state.selectedRef, def, "main", "master"].filter(Boolean);
+  return [...(state.branches || [])].sort((a, b) => {
+    const ai = prefer.indexOf(a.name);
+    const bi = prefer.indexOf(b.name);
+    const ar = ai === -1 ? 99 : ai;
+    const br = bi === -1 ? 99 : bi;
+    if (ar !== br) return ar - br;
+    return 0;
+  });
+}
+
+function filteredRepoChoices() {
+  const q = state.repoPickerOpen ? state.repoQuery : "";
+  return filterAndRank(state.repos || [], q, repoSearchText, COMBO_LIMIT);
+}
+
+function filteredBranchChoices() {
+  const q = state.branchPickerOpen ? state.branchQuery : "";
+  return filterAndRank(sortedBranches(), q, (b) => b.name || "", COMBO_LIMIT);
+}
+
+function closeCombos({ except } = {}) {
+  let changed = false;
+  if (except !== "repo" && state.repoPickerOpen) {
+    state.repoPickerOpen = false;
+    state.repoQuery = "";
+    changed = true;
+  }
+  if (except !== "branch" && state.branchPickerOpen) {
+    state.branchPickerOpen = false;
+    state.branchQuery = "";
+    changed = true;
+  }
+  return changed;
+}
+
+function renderCombobox({
+  id,
+  label,
+  current,
+  query,
+  open,
+  highlight,
+  loading,
+  items,
+  total,
+  allCount,
+  allowCustom,
+  placeholder,
+  emptyHint,
+}) {
+  const inputId = `${id}Query`;
+  const listId = `${id}List`;
+  const display = open ? query : current || "";
+  const ph = open ? current || placeholder || "Search…" : placeholder || "Search…";
+  const typed = (query || "").trim();
+  const custom =
+    Boolean(allowCustom) &&
+    open &&
+    looksLikeRef(typed) &&
+    typed !== current &&
+    !items.some((it) => it.id === typed);
+  const optionCount = items.length + (custom ? 1 : 0);
+  const hi = optionCount ? Math.max(0, Math.min(highlight || 0, optionCount - 1)) : 0;
+
+  let countHint = "";
+  if (loading) countHint = "Loading…";
+  else if (open && typed) {
+    if (!total && custom) countHint = "Not in the list — Enter to use this ref";
+    else if (total > items.length)
+      countHint = `${items.length} of ${total} shown — keep typing`;
+    else if (allCount) countHint = `${total} of ${allCount}`;
+    else countHint = `${total} match${total === 1 ? "" : "es"}`;
+  } else if (open && allCount) countHint = `${allCount} available`;
+  else if (!open && allCount > 8) countHint = `${allCount} — tap to search`;
+
+  return `<div class="field combobox ${open ? "is-open" : ""}" data-combo="${escapeAttr(id)}">
+    <label for="${escapeAttr(inputId)}">${escapeHtml(label)}</label>
+    <div class="combo-anchor">
+    <input
+      id="${escapeAttr(inputId)}"
+      type="search"
+      role="combobox"
+      aria-expanded="${open ? "true" : "false"}"
+      aria-controls="${escapeAttr(listId)}"
+      aria-autocomplete="list"
+      enterkeyhint="search"
+      placeholder="${escapeAttr(ph)}"
+      value="${escapeAttr(display)}"
+      autocomplete="off"
+      autocorrect="off"
+      spellcheck="false"
+      autocapitalize="none"
+      ${loading ? "disabled" : ""}
+    />
+    ${
+      open
+        ? `<div id="${escapeAttr(listId)}" class="combo-list" role="listbox">
+            ${countHint ? `<p class="combo-count">${escapeHtml(countHint)}</p>` : ""}
+            ${items
+              .map((it, i) => {
+                const selected = i === hi;
+                const currentItem = it.id === current;
+                return `<button type="button" class="combo-option ${
+                  selected ? "is-active" : ""
+                } ${currentItem ? "is-current" : ""}" role="option" aria-selected="${
+                  selected ? "true" : "false"
+                }" data-combo-pick="${escapeAttr(id)}" data-combo-id="${escapeAttr(it.id)}">
+                  <span class="title">${escapeHtml(it.label)}</span>
+                  ${
+                    it.sub && it.sub !== it.label
+                      ? `<span class="muted">${escapeHtml(it.sub)}</span>`
+                      : ""
+                  }
+                  ${currentItem ? `<span class="badge fav">current</span>` : ""}
+                  ${(it.badges || [])
+                    .map((b) => `<span class="badge">${escapeHtml(b)}</span>`)
+                    .join("")}
+                </button>`;
+              })
+              .join("")}
+            ${
+              custom
+                ? `<button type="button" class="combo-option combo-custom ${
+                    hi === items.length ? "is-active" : ""
+                  }" role="option" data-combo-pick="${escapeAttr(id)}" data-combo-id="${escapeAttr(
+                    typed,
+                  )}" data-combo-custom="1">
+                    Use <strong>${escapeHtml(typed)}</strong>
+                  </button>`
+                : ""
+            }
+            ${
+              !items.length && !custom
+                ? `<p class="combo-empty">${escapeHtml(emptyHint || "No matches.")}</p>`
+                : ""
+            }
+          </div>`
+        : ""
+    }
+    </div>
+    ${!open && countHint ? `<p class="hint combo-hint">${escapeHtml(countHint)}</p>` : ""}
+  </div>`;
+}
+
+async function onSelectRepo(full) {
+  state.repoPickerOpen = false;
+  state.repoQuery = "";
+  state.focusField = null;
+  const meta = state.repos.find((r) => r.full_name === full);
+  await selectRepo(full, meta?.default_branch, meta);
+}
+
+async function onSelectBranch(name) {
+  state.branchPickerOpen = false;
+  state.branchQuery = "";
+  state.focusField = null;
+  state.selectedRef = name;
+  try {
+    await refreshIos();
+  } catch (err) {
+    state.error = String(err.message || err);
+  }
+  render();
+}
+
+function bindCombobox(view, { id, openKey, queryKey, highlightKey, onSelect }) {
+  const input = view.querySelector(`#${id}Query`);
+  if (!input) return;
+
+  input.addEventListener("focus", () => {
+    closeCombos({ except: id });
+    rememberFocusFromEl(input);
+    if (state[openKey]) return;
+    state[openKey] = true;
+    state[queryKey] = "";
+    state[highlightKey] = 0;
+    render();
+    restoreFocusedField(input.id);
+  });
+
+  input.addEventListener("input", () => {
+    state[openKey] = true;
+    state[queryKey] = input.value || "";
+    state[highlightKey] = 0;
+    rememberFocusFromEl(input);
+    render();
+    restoreRememberedFocus();
+  });
+
+  input.addEventListener("keydown", (e) => {
+    const pickBtns = [...view.querySelectorAll(`[data-combo-pick="${id}"]`)];
+    const count = pickBtns.length;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      rememberFocusFromEl(input);
+      if (!state[openKey]) {
+        state[openKey] = true;
+        state[queryKey] = "";
+        state[highlightKey] = 0;
+      } else if (count) {
+        state[highlightKey] = ((state[highlightKey] || 0) + 1) % count;
+      }
+      render();
+      restoreRememberedFocus();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      rememberFocusFromEl(input);
+      if (count) {
+        state[highlightKey] = ((state[highlightKey] || 0) - 1 + count) % count;
+      }
+      render();
+      restoreRememberedFocus();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const active =
+        view.querySelector(`[data-combo-pick="${id}"].is-active`) || pickBtns[0];
+      const pick = active?.getAttribute("data-combo-id");
+      const typed = (state[queryKey] || "").trim();
+      if (pick) onSelect(pick);
+      else if (looksLikeRef(typed)) onSelect(typed);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      state[openKey] = false;
+      state[queryKey] = "";
+      state.focusField = null;
+      input.blur();
+      render();
+    }
+  });
+
+  input.addEventListener("blur", () => {
+    const inputId = input.id;
+    setTimeout(() => {
+      if (document.activeElement?.id === inputId) return;
+      if (!state[openKey]) return;
+      state[openKey] = false;
+      state[queryKey] = "";
+      if (state.focusField?.id === inputId) state.focusField = null;
+      render();
+    }, 180);
+  });
+
+  view.querySelectorAll(`[data-combo-pick="${id}"]`).forEach((btn) => {
+    btn.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      const pick = btn.getAttribute("data-combo-id");
+      if (pick) onSelect(pick);
+    });
   });
 }
 
@@ -938,22 +1250,18 @@ function renderPlatformSeg() {
 }
 
 function renderProjects() {
-  const repoOptions = state.repos
-    .map(
-      (r) =>
-        `<option value="${escapeAttr(r.full_name)}" ${
-          r.full_name === state.selectedRepo ? "selected" : ""
-        }>${escapeHtml(r.name)}${r.favorite ? " ★" : ""}</option>`,
-    )
-    .join("");
-  const branchOptions = state.branches
-    .map(
-      (b) =>
-        `<option value="${escapeAttr(b.name)}" ${
-          b.name === state.selectedRef ? "selected" : ""
-        }>${escapeHtml(b.name)}</option>`,
-    )
-    .join("");
+  const repoChoices = filteredRepoChoices();
+  const branchChoices = filteredBranchChoices();
+  const repoItems = repoChoices.matches.map((r) => ({
+    id: r.full_name,
+    label: r.name || r.full_name,
+    sub: r.full_name !== r.name ? r.full_name : "",
+    badges: [...(r.favorite ? ["★"] : []), ...(r.pinned ? ["pinned"] : [])],
+  }));
+  const branchItems = branchChoices.matches.map((b) => ({
+    id: b.name,
+    label: b.name,
+  }));
 
   const iosProjects = state.ios?.projects || [];
   const modeHelp = {
@@ -1015,14 +1323,35 @@ function renderProjects() {
       <div class="step">
         <div class="step-label">1 · What</div>
         <div class="field-pair">
-          <div class="field">
-            <label for="repoSelect">App</label>
-            <select id="repoSelect">${repoOptions || "<option value=''>No apps</option>"}</select>
-          </div>
-          <div class="field">
-            <label for="branchSelect">Branch</label>
-            <select id="branchSelect">${branchOptions || `<option>${escapeHtml(state.selectedRef || "")}</option>`}</select>
-          </div>
+          ${renderCombobox({
+            id: "repo",
+            label: "App",
+            current: state.selectedRepo || "",
+            query: state.repoQuery,
+            open: state.repoPickerOpen,
+            highlight: state.repoHighlight,
+            items: repoItems,
+            total: repoChoices.total,
+            allCount: (state.repos || []).length,
+            allowCustom: false,
+            placeholder: "Search apps…",
+            emptyHint: "No apps match.",
+          })}
+          ${renderCombobox({
+            id: "branch",
+            label: "Branch",
+            current: state.selectedRef || "",
+            query: state.branchQuery,
+            open: state.branchPickerOpen,
+            highlight: state.branchHighlight,
+            loading: state.branchesLoading,
+            items: branchItems,
+            total: branchChoices.total,
+            allCount: (state.branches || []).length,
+            allowCustom: true,
+            placeholder: "Search branches…",
+            emptyHint: "No branches match.",
+          })}
         </div>
         <div class="field" style="margin-top:0.65rem">
           <label>Device</label>
@@ -1091,14 +1420,31 @@ function renderProjects() {
           iosProjects.length
             ? `<div class="field" style="margin-top:0.85rem">
                 <label>Detected apps</label>
-                ${iosProjects
-                  .map(
-                    (p) =>
-                      `                      <button type="button" class="list-item tappable pick-ios" data-path="${escapeAttr(
-                        p.projectPath,
-                      )}" data-scheme="${escapeAttr(p.name)}" data-platform="${escapeAttr(
-                        (p.platforms && p.platforms[0]) || "ios",
-                      )}">
+                ${
+                  iosProjects.length > 4
+                    ? `<input id="iosQuery" type="search" enterkeyhint="search" placeholder="Search detected apps…" value="${escapeAttr(
+                        state.iosQuery,
+                      )}" autocomplete="off" style="margin-bottom:0.45rem" />`
+                    : ""
+                }
+                ${
+                  (iosProjects.length > 4
+                    ? filterAndRank(
+                        iosProjects,
+                        state.iosQuery,
+                        (p) =>
+                          `${p.name || ""} ${p.projectPath || ""} ${p.kind || ""} ${(p.platforms || []).join(" ")}`,
+                        40,
+                      ).matches
+                    : iosProjects
+                  )
+                    .map(
+                      (p) =>
+                        `<button type="button" class="list-item tappable pick-ios" data-path="${escapeAttr(
+                          p.projectPath,
+                        )}" data-scheme="${escapeAttr(p.name)}" data-platform="${escapeAttr(
+                          (p.platforms && p.platforms[0]) || "ios",
+                        )}">
                         <span class="title">${escapeHtml(p.name)}</span>
                         <span class="badge">${escapeHtml(p.kind)}</span>
                         ${(p.platforms || ["ios"])
@@ -1106,8 +1452,10 @@ function renderProjects() {
                           .join("")}
                         <div class="muted">${escapeHtml(p.projectPath)}</div>
                       </button>`,
-                  )
-                  .join("")}
+                    )
+                    .join("") ||
+                  `<p class="muted">No detected apps match.</p>`
+                }
               </div>`
             : ""
         }
@@ -1233,7 +1581,11 @@ function renderCursor() {
                         ${a.relevance > 40 ? `<span class="badge fav">likely</span>` : ""}
                         ${agentStatusBadge(a)}
                       </div>
-                      <div class="muted">${escapeHtml(fmtTime(a.updatedAt))}</div>
+                      <div class="muted">${
+                        (a.branches || []).find((b) => b.branch)?.branch
+                          ? `${escapeHtml((a.branches || []).find((b) => b.branch).branch)} · `
+                          : ""
+                      }${escapeHtml(fmtTime(a.updatedAt))}</div>
                     </button>`,
                   )
                   .join("")}
@@ -1267,10 +1619,16 @@ function renderStatus() {
     : "";
   const devices = state.devices
     ? (() => {
-        const phones = state.devices.phones || [];
-        const watches = state.devices.watches || [];
+        const phones = (state.devices.phones || []).filter((p) =>
+          matchesQuery(`iphone ${p}`, state.statusQuery),
+        );
+        const watches = (state.devices.watches || []).filter((w) =>
+          matchesQuery(`watch ${w}`, state.statusQuery),
+        );
         if (!phones.length && !watches.length) {
-          return `<p class="muted">None paired — OTA and TestFlight still work.</p>`;
+          return state.statusQuery.trim()
+            ? `<p class="muted">No devices match.</p>`
+            : `<p class="muted">None paired — OTA and TestFlight still work.</p>`;
         }
         return [
           ...phones.map((p) => `<div class="list-item"><span class="badge">iPhone</span> ${escapeHtml(p)}</div>`),
@@ -1278,9 +1636,16 @@ function renderStatus() {
         ].join("");
       })()
     : `<p class="muted">Device probe unavailable.</p>`;
-  const localJobs = (state.jobs || []).slice(0, 6);
-  const jobsHtml = localJobs.length
-    ? localJobs
+  const jobLimit = state.statusQuery.trim() ? 30 : 6;
+  const jobHits = filterAndRank(
+    state.jobs || [],
+    state.statusQuery,
+    (j) =>
+      `${j.scheme || ""} ${j.ref || ""} ${j.status || ""} ${j.repository || ""} ${j.deployMode || ""}`,
+    jobLimit,
+  );
+  const jobsHtml = jobHits.matches.length
+    ? jobHits.matches
         .map(
           (j) => `<div class="list-item">
             <span class="badge ${
@@ -1295,11 +1660,24 @@ function renderStatus() {
             ${j.installUrl ? `<a class="secondary" href="${escapeAttr(j.installUrl)}" style="margin-top:0.5rem">Install</a>` : ""}
           </div>`,
         )
-        .join("")
-    : `<p class="muted">No builds yet.</p>`;
-  const runs = (state.deploys || []).slice(0, 5);
-  const runsHtml = runs.length
-    ? runs
+        .join("") +
+      (jobHits.total > jobHits.matches.length
+        ? `<p class="hint">${jobHits.matches.length} of ${jobHits.total} shown</p>`
+        : "")
+    : `<p class="muted">${
+        (state.jobs || []).length && state.statusQuery.trim()
+          ? "No builds match."
+          : "No builds yet."
+      }</p>`;
+  const runLimit = state.statusQuery.trim() ? 20 : 5;
+  const runHits = filterAndRank(
+    state.deploys || [],
+    state.statusQuery,
+    (r) => `${r.display_title || ""} ${r.name || ""} ${r.status || ""} ${r.conclusion || ""}`,
+    runLimit,
+  );
+  const runsHtml = runHits.matches.length
+    ? runHits.matches
         .map((r) => {
           const badge =
             r.status === "completed"
@@ -1314,10 +1692,20 @@ function renderStatus() {
           </div>`;
         })
         .join("")
-    : `<p class="muted">None (normal for local builds).</p>`;
-  const arts = (state.artifacts || []).slice(0, 5);
-  const artsHtml = arts.length
-    ? arts
+    : `<p class="muted">${
+        (state.deploys || []).length && state.statusQuery.trim()
+          ? "No Actions runs match."
+          : "None (normal for local builds)."
+      }</p>`;
+  const artLimit = state.statusQuery.trim() ? 20 : 5;
+  const artHits = filterAndRank(
+    state.artifacts || [],
+    state.statusQuery,
+    (a) => `${a.title || ""} ${a.id || ""}`,
+    artLimit,
+  );
+  const artsHtml = artHits.matches.length
+    ? artHits.matches
         .map(
           (a) => `<div class="list-item">
             <div class="title">${escapeHtml(a.title || a.id)}</div>
@@ -1325,7 +1713,11 @@ function renderStatus() {
           </div>`,
         )
         .join("")
-    : `<p class="muted">None yet.</p>`;
+    : `<p class="muted">${
+        (state.artifacts || []).length && state.statusQuery.trim()
+          ? "No OTA pages match."
+          : "None yet."
+      }</p>`;
 
   return `
     ${
@@ -1358,6 +1750,17 @@ function renderStatus() {
       <div class="row" style="justify-content:space-between;align-items:center">
         <h2 style="margin:0">Recent builds</h2>
         <button class="secondary" id="refreshStatus" type="button">Refresh</button>
+      </div>
+      <div class="filter-bar">
+        <label class="sr-only" for="statusQuery">Search builds</label>
+        <input
+          id="statusQuery"
+          type="search"
+          enterkeyhint="search"
+          placeholder="Search builds, branches, Actions, OTA…"
+          value="${escapeAttr(state.statusQuery)}"
+          autocomplete="off"
+        />
       </div>
       <div style="margin-top:0.75rem">${jobsHtml}</div>
     </div>
@@ -1412,26 +1815,20 @@ function bindViewEvents(view) {
     btn.addEventListener("click", () => setTab(btn.getAttribute("data-tab-jump"))),
   );
 
-  const repoSelect = view.querySelector("#repoSelect");
-  if (repoSelect) {
-    repoSelect.addEventListener("change", async (e) => {
-      const full = e.target.value;
-      const meta = state.repos.find((r) => r.full_name === full);
-      await selectRepo(full, meta?.default_branch, meta);
-    });
-  }
-  const branchSelect = view.querySelector("#branchSelect");
-  if (branchSelect) {
-    branchSelect.addEventListener("change", async (e) => {
-      state.selectedRef = e.target.value;
-      try {
-        await refreshIos();
-      } catch (err) {
-        state.error = String(err.message || err);
-      }
-      render();
-    });
-  }
+  bindCombobox(view, {
+    id: "repo",
+    openKey: "repoPickerOpen",
+    queryKey: "repoQuery",
+    highlightKey: "repoHighlight",
+    onSelect: onSelectRepo,
+  });
+  bindCombobox(view, {
+    id: "branch",
+    openKey: "branchPickerOpen",
+    queryKey: "branchQuery",
+    highlightKey: "branchHighlight",
+    onSelect: onSelectBranch,
+  });
   const pathInput = view.querySelector("#pathInput");
   if (pathInput) pathInput.addEventListener("change", (e) => (state.projectPath = e.target.value));
   const schemeInput = view.querySelector("#schemeInput");
@@ -1498,21 +1895,33 @@ function bindViewEvents(view) {
 
   const agentsQuery = view.querySelector("#agentsQuery");
   if (agentsQuery) {
-    agentsQuery.addEventListener("input", (e) => {
-      state.agentsQuery = e.target.value || "";
+    agentsQuery.addEventListener("focus", () => rememberFocusFromEl(agentsQuery));
+    agentsQuery.addEventListener("input", () => {
+      state.agentsQuery = agentsQuery.value || "";
       persistAgentsFilters();
-      const start = agentsQuery.selectionStart;
-      const end = agentsQuery.selectionEnd;
+      rememberFocusFromEl(agentsQuery);
       render();
-      const again = app.querySelector("#agentsQuery");
-      if (again) {
-        again.focus();
-        try {
-          again.setSelectionRange(start, end);
-        } catch {
-          /* ignore */
-        }
-      }
+      restoreRememberedFocus();
+    });
+  }
+  const statusQuery = view.querySelector("#statusQuery");
+  if (statusQuery) {
+    statusQuery.addEventListener("focus", () => rememberFocusFromEl(statusQuery));
+    statusQuery.addEventListener("input", () => {
+      state.statusQuery = statusQuery.value || "";
+      rememberFocusFromEl(statusQuery);
+      render();
+      restoreRememberedFocus();
+    });
+  }
+  const iosQuery = view.querySelector("#iosQuery");
+  if (iosQuery) {
+    iosQuery.addEventListener("focus", () => rememberFocusFromEl(iosQuery));
+    iosQuery.addEventListener("input", () => {
+      state.iosQuery = iosQuery.value || "";
+      rememberFocusFromEl(iosQuery);
+      render();
+      restoreRememberedFocus();
     });
   }
   const agentsShowArchived = view.querySelector("#agentsShowArchived");
@@ -1803,6 +2212,7 @@ function render(opts = {}) {
   const logPre = view.querySelector("#liveLog");
   if (logPre) bindLiveLogFollow(logPre);
   restoreScrollPositions(view, { viewScrollTop, logStickBottom });
+  restoreRememberedFocus();
 }
 
 function escapeHtml(s) {
