@@ -551,10 +551,41 @@ a.secondary.block {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  touch-action: pan-y;
+  overflow-anchor: none;
   background: var(--surface-2);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-xs);
   box-shadow: var(--shadow-soft);
+}
+
+/*
+ * Mobile: expand the list in-flow so #view is the only scroller.
+ * Nested overflow + overlay dropdowns swallow (then dismiss) the gesture
+ * on iOS — especially when every row is a button.
+ */
+@media (hover: none), (max-width: 719px) {
+  .field-pair:has(.combobox.is-open) {
+    grid-template-columns: 1fr;
+  }
+
+  .combobox.is-open .combo-anchor > input {
+    position: sticky;
+    top: 0;
+    z-index: 8;
+    background: var(--surface-2);
+  }
+
+  .combo-list {
+    position: static;
+    z-index: auto;
+    max-height: none;
+    overflow: visible;
+    -webkit-overflow-scrolling: auto;
+    margin-top: 0.35rem;
+    box-shadow: none;
+    touch-action: auto;
+  }
 }
 
 .combo-count,
@@ -589,6 +620,9 @@ a.secondary.block {
   padding: 0.7rem 0.8rem;
   font: inherit;
   cursor: pointer;
+  touch-action: pan-y;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .combo-option:first-of-type,
@@ -609,7 +643,8 @@ a.secondary.block {
 }
 
 .combo-option.is-active,
-.combo-option:hover {
+.combo-option:hover,
+.combo-option:active {
   background: var(--accent-soft);
 }
 
