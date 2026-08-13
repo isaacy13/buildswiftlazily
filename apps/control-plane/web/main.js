@@ -29,6 +29,10 @@ const state = {
   jobs: [],
   activeJobId: null,
   activeJob: null,
+  /** Server says a deploy gate / live job exists (for reconnect banner). */
+  gateHeld: false,
+  liveJobId: null,
+  webBuild: "",
   busy: false,
   cancelling: false,
   message: "",
@@ -169,6 +173,7 @@ async function bootstrap() {
   try {
     const health = await api("/api/health");
     state.apiAuthRequired = Boolean(health.apiAuthRequired);
+    state.webBuild = health.webBuild || "";
     state.config = await api("/api/config");
     state.apiAuthRequired = Boolean(
       state.config.apiAuthRequired || state.apiAuthRequired,
@@ -176,6 +181,15 @@ async function bootstrap() {
     state.setup = await api("/api/setup");
     state.deployMode = state.config.defaults?.deploy_mode || "ota";
     state.engine = state.config.deployEngine || "local";
+
+    // Reattach before slow repo scanning so a refresh shows the live card ASAP.
+    try {
+      await resumeActiveJob();
+      if (state.activeJob && isLiveJob(state.activeJob)) render();
+    } catch {
+      /* ignore */
+    }
+
     const reposRes = await api("/api/repos");
     state.repos = reposRes.repos || [];
     state.warning = reposRes.warning || "";
@@ -192,7 +206,7 @@ async function bootstrap() {
         "API token required — open Status, paste BSL_API_TOKEN from .env, then Save.";
       state.apiAuthRequired = true;
       state.tab = "status";
-    } else {
+    } else if (!(state.activeJob && isLiveJob(state.activeJob))) {
       state.error = msg;
     }
   }
@@ -218,22 +232,39 @@ async function resumeActiveJob() {
 
   let jobs = state.jobs || [];
   let liveJobId = null;
+  let embeddedLive = null;
+  let gateHeld = false;
   try {
     const data = await api("/api/jobs");
     jobs = data.jobs || [];
     state.jobs = jobs;
     liveJobId = data.liveJobId || null;
+    gateHeld = Boolean(data.gateHeld);
+    state.gateHeld = gateHeld;
+    state.liveJobId = liveJobId;
+    if (data.liveJob && isLiveJob(data.liveJob)) {
+      embeddedLive = data.liveJob;
+      liveJobId = data.liveJob.id;
+      state.liveJobId = liveJobId;
+    } else if (data.liveJob && data.liveJob.id) {
+      // Gate may still reference a job even if status flipped mid-request.
+      liveJobId = liveJobId || data.liveJob.id;
+      state.liveJobId = liveJobId;
+    }
     // If the gate is held but liveJobId was missing, prefer any live row in the list.
     if (!liveJobId) {
       const listedLive = jobs.find((j) => isLiveJob(j));
-      if (listedLive) liveJobId = listedLive.id;
+      if (listedLive) {
+        liveJobId = listedLive.id;
+        state.liveJobId = liveJobId;
+      }
     }
   } catch {
     /* keep going with remembered job if any */
   }
 
-  let live = null;
-  if (liveJobId) {
+  let live = embeddedLive;
+  if (!live && liveJobId) {
     live =
       (remembered && remembered.id === liveJobId ? remembered : null) ||
       jobs.find((j) => j.id === liveJobId) ||
@@ -259,14 +290,34 @@ async function resumeActiveJob() {
       const fresh = await api(`/api/jobs/${encodeURIComponent(live.id)}`);
       live = fresh;
     } catch {
-      /* use list copy */
+      /* use list / embedded copy */
     }
     adoptJob(live, {
       resumePoll: true,
       message: "Reattached to build in progress…",
     });
+    state.gateHeld = true;
+    state.liveJobId = live.id;
     await pollJob(live.id);
     return true;
+  }
+
+  // Gate held but job payload was stale — one more direct lookup by remembered id.
+  if (gateHeld && rememberedId && !(remembered && isLiveJob(remembered))) {
+    try {
+      const again = await api(`/api/jobs/${encodeURIComponent(rememberedId)}`);
+      if (isLiveJob(again)) {
+        adoptJob(again, {
+          resumePoll: true,
+          message: "Reattached to build in progress…",
+        });
+        state.liveJobId = again.id;
+        await pollJob(again.id);
+        return true;
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   // No live job — still restore the last finished card (Install / logs) if we have one.
@@ -286,10 +337,37 @@ async function resumeActiveJob() {
   return false;
 }
 
-async function selectRepo(fullName, preferredRef, meta) {
-  state.selectedRepo = fullName;
+async function reconnectLiveBuild() {
   state.error = "";
-  state.message = "";
+  state.message = "Looking for live build…";
+  render();
+  try {
+    const ok = await resumeActiveJob();
+    if (ok) {
+      state.message = "Reattached to build in progress…";
+      state.error = "";
+    } else if (state.gateHeld || state.liveJobId) {
+      state.error =
+        "Mac still reports a deploy in progress, but no live job was returned. Restart ./scripts/start.sh on the Mac (it now rebuilds + restarts), then refresh.";
+      state.message = "";
+    } else {
+      state.message = "No live build on the Mac right now.";
+    }
+  } catch (e) {
+    state.error = String(e.message || e);
+    state.message = "";
+  }
+  render();
+}
+
+async function selectRepo(fullName, preferredRef, meta) {
+  const keepLive = state.activeJob && isLiveJob(state.activeJob);
+  state.selectedRepo = fullName;
+  // Don't wipe reattach messaging / errors while a live build is on screen.
+  if (!keepLive) {
+    state.error = "";
+    state.message = "";
+  }
   state.branches = [];
   state.ios = null;
   render();
@@ -310,7 +388,7 @@ async function selectRepo(fullName, preferredRef, meta) {
     }
     await refreshIos();
   } catch (e) {
-    state.error = String(e.message || e);
+    if (!keepLive) state.error = String(e.message || e);
   }
   render();
 }
@@ -360,7 +438,7 @@ async function pollJob(jobId) {
     stopPoll();
     state.busy = false;
   }
-  render();
+  render({ allowPatch: true });
 }
 
 async function cancelActiveJob() {
@@ -399,7 +477,8 @@ async function cancelActiveJob() {
 
 async function reattachFromPayload(payload, fallbackMessage) {
   const reattachId = payload?.jobId || null;
-  const embedded = payload?.liveJob && isLiveJob(payload.liveJob) ? payload.liveJob : null;
+  const embedded =
+    payload?.liveJob && isLiveJob(payload.liveJob) ? payload.liveJob : null;
 
   if (embedded) {
     adoptJob(embedded, {
@@ -416,18 +495,22 @@ async function reattachFromPayload(payload, fallbackMessage) {
   }
 
   if (reattachId) {
-    const job = await api(`/api/jobs/${encodeURIComponent(reattachId)}`);
-    if (isLiveJob(job)) {
-      adoptJob(job, {
-        resumePoll: true,
-        message: "Reattached to build in progress…",
-      });
-      await pollJob(job.id);
+    try {
+      const job = await api(`/api/jobs/${encodeURIComponent(reattachId)}`);
+      if (isLiveJob(job)) {
+        adoptJob(job, {
+          resumePoll: true,
+          message: "Reattached to build in progress…",
+        });
+        await pollJob(job.id);
+        return true;
+      }
+      // Finished while we were attaching — still show the card.
+      adoptJob(job);
       return true;
+    } catch {
+      /* fall through to list-based resume */
     }
-    // Finished while we were attaching — still show the card.
-    adoptJob(job);
-    return true;
   }
 
   const resumed = await resumeActiveJob();
@@ -459,6 +542,21 @@ async function deploy() {
     render();
     return;
   }
+
+  // Before starting a new deploy, try to reattach — refresh often drops the card
+  // while the Mac gate is still held.
+  try {
+    const resumed = await resumeActiveJob();
+    if (resumed && state.activeJob && isLiveJob(state.activeJob)) {
+      state.message = "Reattached to build in progress…";
+      state.error = "";
+      render();
+      return;
+    }
+  } catch {
+    /* continue to POST */
+  }
+
   state.busy = true;
   state.error = "";
   state.message = "";
@@ -497,19 +595,35 @@ async function deploy() {
     }
   } catch (e) {
     const payload = e.payload || {};
+    const msg = String(e.message || e);
     const shouldReattach =
+      e.status === 429 ||
       Boolean(payload.reattach) ||
       Boolean(payload.jobId) ||
       Boolean(payload.liveJob) ||
-      /already in progress/i.test(String(e.message || ""));
+      /already in progress|cooldown/i.test(msg);
 
     if (shouldReattach) {
+      state.message = "Reattaching to build in progress…";
+      state.error = "";
+      render();
       try {
-        const ok = await reattachFromPayload(
-          payload,
-          String(e.message || e),
-        );
-        if (ok) return;
+        const ok = await reattachFromPayload(payload, null);
+        if (ok) {
+          state.error = "";
+          state.message =
+            state.message || "Reattached to build in progress…";
+          render();
+          return;
+        }
+        // Payload may be incomplete (old server / lost job id) — ask /api/jobs.
+        const resumed = await resumeActiveJob();
+        if (resumed) {
+          state.error = "";
+          state.message = "Reattached to build in progress…";
+          render();
+          return;
+        }
       } catch (reattachErr) {
         state.error = String(reattachErr.message || reattachErr);
         if (!(state.activeJob && isLiveJob(state.activeJob))) {
@@ -518,9 +632,17 @@ async function deploy() {
         render();
         return;
       }
+      state.error =
+        "A deploy is already in progress, but the live job could not be loaded. On the Mac run ./scripts/start.sh again (it now rebuilds + restarts), then hard-refresh this page.";
+      state.message = "";
+      if (!(state.activeJob && isLiveJob(state.activeJob))) {
+        state.busy = false;
+      }
+      render();
+      return;
     }
 
-    state.error = String(e.message || e);
+    state.error = msg;
     if (!(state.activeJob && isLiveJob(state.activeJob))) {
       state.busy = false;
     }
@@ -755,9 +877,15 @@ function renderJobCard() {
         ? `${
             !live
               ? `<button type="button" class="text-btn" id="toggleLogs">${state.showLogs ? "Hide log" : "Show log"}</button>`
-              : `<p class="hint" style="margin-top:0.65rem">Live log · updates every few seconds</p>`
+              : `<p class="hint" style="margin-top:0.65rem">Live log · pinned to latest</p>`
           }
-           ${showFullLogs ? `<pre class="log">${escapeHtml(logs.slice(-40).join("\n"))}</pre>` : ""}`
+           ${
+             showFullLogs
+               ? `<pre class="log" id="liveLog" data-live="${live ? "1" : "0"}">${escapeHtml(
+                   logs.slice(-80).join("\n"),
+                 )}</pre>`
+               : ""
+           }`
         : live
           ? `<p class="muted" style="margin-top:0.65rem">Waiting for first log line…</p>`
           : ""
@@ -866,8 +994,22 @@ function renderProjects() {
       state.activeJob.status === "failed" ||
       state.activeJob.status === "cancelled");
 
+  const needsReconnect =
+    !jobFirst &&
+    (state.gateHeld || state.liveJobId) &&
+    !(state.activeJob && isLiveJob(state.activeJob));
+
   return `
     ${renderSetupBanner()}
+    ${
+      needsReconnect
+        ? `<div class="banner warn">
+      <strong>A build is running on the Mac</strong>
+      <div class="muted">This page lost the live card after refresh. Reconnect to watch logs.</div>
+      <button type="button" class="secondary" id="reconnectBuildBtn" style="margin-top:0.65rem">Reconnect to build</button>
+    </div>`
+        : ""
+    }
     ${jobFirst ? renderJobCard() : ""}
     <div class="card build-card ${state.busy ? "is-dim" : ""}">
       <div class="step">
@@ -1116,7 +1258,12 @@ function renderStatus() {
   const needToken = state.apiAuthRequired && !state.apiToken;
   const health = state.config
     ? `<div class="kv"><span>Tailscale</span><code>${escapeHtml(state.config.tsHost || "unset")}</code></div>
-       <div class="kv"><span>Engine</span><code>${escapeHtml(state.config.deployEngine || "local")}</code></div>`
+       <div class="kv"><span>Engine</span><code>${escapeHtml(state.config.deployEngine || "local")}</code></div>
+       ${
+         state.webBuild
+           ? `<div class="kv"><span>PWA build</span><code>${escapeHtml(state.webBuild)}</code></div>`
+           : ""
+       }`
     : "";
   const devices = state.devices
     ? (() => {
@@ -1312,6 +1459,9 @@ function bindViewEvents(view) {
     engineSelect.addEventListener("change", (e) => (state.engine = e.target.value));
   const deployBtn = view.querySelector("#deployBtn");
   if (deployBtn) deployBtn.addEventListener("click", deploy);
+  const reconnectBuildBtn = view.querySelector("#reconnectBuildBtn");
+  if (reconnectBuildBtn)
+    reconnectBuildBtn.addEventListener("click", reconnectLiveBuild);
   const cancelJobBtn = view.querySelector("#cancelJobBtn");
   if (cancelJobBtn) cancelJobBtn.addEventListener("click", cancelActiveJob);
   view.querySelectorAll(".pick-ios").forEach((btn) =>
@@ -1410,6 +1560,10 @@ function bindViewEvents(view) {
 
 /** Stable identity for #view content; scroll is kept only across same-key renders. */
 let lastScrollViewKey = "";
+/** Live log follows the bottom unless the user scrolls up to read older lines. */
+let liveLogFollowBottom = true;
+let liveLogScrollBound = null;
+
 function scrollViewKey() {
   if (state.tab === "cursor") {
     if (state.openingAgentId || state.agentDetail) return "cursor:detail";
@@ -1418,16 +1572,41 @@ function scrollViewKey() {
   return state.tab;
 }
 
-function render() {
-  renderShellOnce();
+function nearBottom(el, px = 64) {
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= px;
+}
 
-  const body =
-    state.tab === "projects"
-      ? renderProjects()
-      : state.tab === "cursor"
-        ? renderCursor()
-        : renderStatus();
+function bindLiveLogFollow(logEl) {
+  if (!logEl || logEl === liveLogScrollBound) return;
+  liveLogScrollBound = logEl;
+  logEl.addEventListener(
+    "scroll",
+    () => {
+      liveLogFollowBottom = nearBottom(logEl);
+    },
+    { passive: true },
+  );
+}
 
+function pinLiveLogToBottom(logEl) {
+  if (!logEl) return;
+  const apply = () => {
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+  apply();
+  requestAnimationFrame(() => {
+    apply();
+    requestAnimationFrame(apply);
+  });
+}
+
+function formatLiveLogText(logs) {
+  return (logs || []).slice(-80).join("\n");
+}
+
+/** Update shell chrome (pill + tabs) without touching #view. */
+function updateShellChrome() {
   const statusLabel = state.busy
     ? "building…"
     : state.openingAgentId || state.agentsLoading
@@ -1454,15 +1633,176 @@ function render() {
     btn.classList.toggle("active", active);
     btn.setAttribute("aria-current", active ? "page" : "false");
   });
+}
+
+/**
+ * In-place patch for live job polls so #view / log console don't remount.
+ * Returns true when the DOM was patched without a full innerHTML swap.
+ */
+function tryPatchLiveJobCard(view) {
+  if (state.tab !== "projects") return false;
+  const job = state.activeJob;
+  if (!job || !isLiveJob(job)) return false;
+  const card = view.querySelector(".job-card.is-live");
+  if (!card) return false;
+
+  // Freeze the page scroll while we mutate the card (iOS scroll-anchoring).
+  const viewScrollTop = view.scrollTop;
+
+  const badge = card.querySelector(".badge");
+  if (badge) {
+    badge.textContent = job.status;
+    badge.className = `badge run`;
+  }
+
+  const meta = card.querySelector(".job-meta");
+  if (meta) {
+    const startedMs = job.createdAt ? Date.parse(job.createdAt) : NaN;
+    let elapsed = "";
+    if (!Number.isNaN(startedMs)) {
+      const sec = Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
+      if (sec < 60) elapsed = `${sec}s`;
+      else {
+        const min = Math.floor(sec / 60);
+        elapsed =
+          min < 60 ? `${min}m ${sec % 60}s` : `${Math.floor(min / 60)}h ${min % 60}m`;
+      }
+    }
+    const nextMeta = `${job.scheme || job.repository} · ${job.ref} · ${job.deployMode}${
+      elapsed ? ` · ${elapsed}` : ""
+    }`;
+    if (meta.textContent !== nextMeta) meta.textContent = nextMeta;
+  }
+
+  const logs = job.logs || [];
+  const latestLog = logs.length ? logs[logs.length - 1] : "";
+  let latest = card.querySelector(".job-latest");
+  if (latestLog) {
+    if (!latest) {
+      latest = document.createElement("p");
+      latest.className = "job-latest";
+      const cancelBtn = card.querySelector("#cancelJobBtn");
+      if (cancelBtn) card.insertBefore(latest, cancelBtn);
+      else card.appendChild(latest);
+    }
+    // Only touch DOM when the headline line actually changed.
+    const nextLatest = latestLog;
+    if (latest.dataset.line !== nextLatest) {
+      latest.dataset.line = nextLatest;
+      latest.innerHTML = `<span class="pulse" aria-hidden="true"></span>${escapeHtml(nextLatest)}`;
+    }
+  } else if (latest) {
+    latest.remove();
+  }
+
+  const cancelBtn = card.querySelector("#cancelJobBtn");
+  if (cancelBtn) {
+    cancelBtn.disabled = !!state.cancelling;
+    cancelBtn.textContent = state.cancelling ? "Cancelling…" : "Cancel build";
+  }
+
+  let logPre = card.querySelector("#liveLog") || card.querySelector("pre.log");
+  const logText = formatLiveLogText(logs);
+  if (logs.length) {
+    if (!logPre) {
+      const hint = card.querySelector(".hint");
+      logPre = document.createElement("pre");
+      logPre.className = "log";
+      logPre.id = "liveLog";
+      logPre.dataset.live = "1";
+      if (hint) hint.after(logPre);
+      else card.appendChild(logPre);
+      liveLogFollowBottom = true;
+    }
+    bindLiveLogFollow(logPre);
+    if (logPre.textContent !== logText) {
+      // Replacing text resets scrollTop to 0 in every browser — pin back to bottom
+      // for live follow mode (default). That sliding 80-line window otherwise looks
+      // like the console "jumped to the top" on every poll.
+      logPre.textContent = logText;
+      if (liveLogFollowBottom) pinLiveLogToBottom(logPre);
+    } else if (liveLogFollowBottom && !nearBottom(logPre)) {
+      pinLiveLogToBottom(logPre);
+    }
+  }
+
+  const waiting = card.querySelector(".muted");
+  if (waiting && /Waiting for first log/.test(waiting.textContent || "")) {
+    if (logs.length) waiting.remove();
+  }
+
+  const deployBtn = view.querySelector("#deployBtn");
+  if (deployBtn) {
+    deployBtn.disabled = state.busy || !state.scheme || !state.selectedRepo;
+    deployBtn.textContent = state.busy
+      ? "Building…"
+      : state.deployMode === "testflight"
+        ? "Build & upload"
+        : "Build & install";
+  }
+  const buildCard = view.querySelector(".build-card");
+  if (buildCard) buildCard.classList.toggle("is-dim", !!state.busy);
+
+  // Restore page scroll in case layout mutations nudged it (common on iOS).
+  if (view.scrollTop !== viewScrollTop) view.scrollTop = viewScrollTop;
+
+  return true;
+}
+
+function restoreScrollPositions(view, { viewScrollTop, logStickBottom }) {
+  const apply = () => {
+    view.scrollTop = viewScrollTop;
+    const logPre = view.querySelector("#liveLog") || view.querySelector("pre.log");
+    if (!logPre) return;
+    bindLiveLogFollow(logPre);
+    if (logStickBottom || liveLogFollowBottom) {
+      logPre.scrollTop = logPre.scrollHeight;
+      liveLogFollowBottom = true;
+    }
+  };
+  apply();
+  // iOS Safari often ignores sync scrollTop right after innerHTML — re-apply twice.
+  requestAnimationFrame(() => {
+    apply();
+    requestAnimationFrame(apply);
+  });
+}
+
+function render(opts = {}) {
+  const allowPatch = !!opts.allowPatch;
+  renderShellOnce();
+  updateShellChrome();
 
   const view = app.querySelector("#view");
   if (!view) return;
   const key = scrollViewKey();
-  const scrollTop = key === lastScrollViewKey ? view.scrollTop : 0;
+
+  // Live poll path: patch the job card in place so the console doesn't remount.
+  if (allowPatch && key === lastScrollViewKey && tryPatchLiveJobCard(view)) {
+    return;
+  }
+
+  const body =
+    state.tab === "projects"
+      ? renderProjects()
+      : state.tab === "cursor"
+        ? renderCursor()
+        : renderStatus();
+
+  const sameKey = key === lastScrollViewKey;
+  const viewScrollTop = sameKey ? view.scrollTop : 0;
+  const live = state.activeJob && isLiveJob(state.activeJob);
+  // Live console always opens pinned to the latest line.
+  const logStickBottom = !sameKey || live || liveLogFollowBottom;
+
   view.innerHTML = body;
-  view.scrollTop = scrollTop;
   lastScrollViewKey = key;
+  liveLogScrollBound = null;
+  if (live) liveLogFollowBottom = true;
   bindViewEvents(view);
+  const logPre = view.querySelector("#liveLog");
+  if (logPre) bindLiveLogFollow(logPre);
+  restoreScrollPositions(view, { viewScrollTop, logStickBottom });
 }
 
 function escapeHtml(s) {
