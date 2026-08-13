@@ -93,6 +93,15 @@ export function createApp(deps: AppDeps) {
     return c.json({ error: "internal error" }, 500);
   });
 
+  // Keep the HTML shell fresh so iPhone PWAs pick up new JS hashes after deploy.
+  app.use("*", async (c, next) => {
+    await next();
+    const p = c.req.path.split("?")[0];
+    if (p === "/" || p.endsWith(".html") || p.endsWith(".webmanifest")) {
+      c.header("Cache-Control", "no-store, max-age=0");
+    }
+  });
+
   app.get("/api/health", (c) =>
     c.json({
       ...healthPayload(env),
@@ -358,9 +367,13 @@ export function createApp(deps: AppDeps) {
 
   app.get("/api/jobs", (c) => {
     const live = jobs.findLive();
+    const gateJobId = deployGate.getInflightJobId();
+    const liveJob =
+      live || (gateJobId ? jobs.get(gateJobId) : undefined) || null;
     return c.json({
       jobs: jobs.list(20),
-      liveJobId: live?.id || deployGate.getInflightJobId() || null,
+      liveJobId: live?.id || gateJobId || null,
+      liveJob,
       gateHeld: deployGate.isInflight(),
     });
   });

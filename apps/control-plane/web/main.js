@@ -176,6 +176,15 @@ async function bootstrap() {
     state.setup = await api("/api/setup");
     state.deployMode = state.config.defaults?.deploy_mode || "ota";
     state.engine = state.config.deployEngine || "local";
+
+    // Reattach before slow repo scanning so a refresh shows the live card ASAP.
+    try {
+      await resumeActiveJob();
+      if (state.activeJob && isLiveJob(state.activeJob)) render();
+    } catch {
+      /* ignore */
+    }
+
     const reposRes = await api("/api/repos");
     state.repos = reposRes.repos || [];
     state.warning = reposRes.warning || "";
@@ -192,7 +201,7 @@ async function bootstrap() {
         "API token required — open Status, paste BSL_API_TOKEN from .env, then Save.";
       state.apiAuthRequired = true;
       state.tab = "status";
-    } else {
+    } else if (!(state.activeJob && isLiveJob(state.activeJob))) {
       state.error = msg;
     }
   }
@@ -218,11 +227,18 @@ async function resumeActiveJob() {
 
   let jobs = state.jobs || [];
   let liveJobId = null;
+  let embeddedLive = null;
+  let gateHeld = false;
   try {
     const data = await api("/api/jobs");
     jobs = data.jobs || [];
     state.jobs = jobs;
     liveJobId = data.liveJobId || null;
+    gateHeld = Boolean(data.gateHeld);
+    if (data.liveJob && isLiveJob(data.liveJob)) {
+      embeddedLive = data.liveJob;
+      liveJobId = data.liveJob.id;
+    }
     // If the gate is held but liveJobId was missing, prefer any live row in the list.
     if (!liveJobId) {
       const listedLive = jobs.find((j) => isLiveJob(j));
@@ -232,8 +248,8 @@ async function resumeActiveJob() {
     /* keep going with remembered job if any */
   }
 
-  let live = null;
-  if (liveJobId) {
+  let live = embeddedLive;
+  if (!live && liveJobId) {
     live =
       (remembered && remembered.id === liveJobId ? remembered : null) ||
       jobs.find((j) => j.id === liveJobId) ||
@@ -259,7 +275,7 @@ async function resumeActiveJob() {
       const fresh = await api(`/api/jobs/${encodeURIComponent(live.id)}`);
       live = fresh;
     } catch {
-      /* use list copy */
+      /* use list / embedded copy */
     }
     adoptJob(live, {
       resumePoll: true,
@@ -267,6 +283,23 @@ async function resumeActiveJob() {
     });
     await pollJob(live.id);
     return true;
+  }
+
+  // Gate held but job payload was stale — one more direct lookup by remembered id.
+  if (gateHeld && rememberedId && !(remembered && isLiveJob(remembered))) {
+    try {
+      const again = await api(`/api/jobs/${encodeURIComponent(rememberedId)}`);
+      if (isLiveJob(again)) {
+        adoptJob(again, {
+          resumePoll: true,
+          message: "Reattached to build in progress…",
+        });
+        await pollJob(again.id);
+        return true;
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   // No live job — still restore the last finished card (Install / logs) if we have one.
@@ -287,9 +320,13 @@ async function resumeActiveJob() {
 }
 
 async function selectRepo(fullName, preferredRef, meta) {
+  const keepLive = state.activeJob && isLiveJob(state.activeJob);
   state.selectedRepo = fullName;
-  state.error = "";
-  state.message = "";
+  // Don't wipe reattach messaging / errors while a live build is on screen.
+  if (!keepLive) {
+    state.error = "";
+    state.message = "";
+  }
   state.branches = [];
   state.ios = null;
   render();
@@ -310,7 +347,7 @@ async function selectRepo(fullName, preferredRef, meta) {
     }
     await refreshIos();
   } catch (e) {
-    state.error = String(e.message || e);
+    if (!keepLive) state.error = String(e.message || e);
   }
   render();
 }
@@ -399,7 +436,8 @@ async function cancelActiveJob() {
 
 async function reattachFromPayload(payload, fallbackMessage) {
   const reattachId = payload?.jobId || null;
-  const embedded = payload?.liveJob && isLiveJob(payload.liveJob) ? payload.liveJob : null;
+  const embedded =
+    payload?.liveJob && isLiveJob(payload.liveJob) ? payload.liveJob : null;
 
   if (embedded) {
     adoptJob(embedded, {
@@ -416,18 +454,22 @@ async function reattachFromPayload(payload, fallbackMessage) {
   }
 
   if (reattachId) {
-    const job = await api(`/api/jobs/${encodeURIComponent(reattachId)}`);
-    if (isLiveJob(job)) {
-      adoptJob(job, {
-        resumePoll: true,
-        message: "Reattached to build in progress…",
-      });
-      await pollJob(job.id);
+    try {
+      const job = await api(`/api/jobs/${encodeURIComponent(reattachId)}`);
+      if (isLiveJob(job)) {
+        adoptJob(job, {
+          resumePoll: true,
+          message: "Reattached to build in progress…",
+        });
+        await pollJob(job.id);
+        return true;
+      }
+      // Finished while we were attaching — still show the card.
+      adoptJob(job);
       return true;
+    } catch {
+      /* fall through to list-based resume */
     }
-    // Finished while we were attaching — still show the card.
-    adoptJob(job);
-    return true;
   }
 
   const resumed = await resumeActiveJob();
@@ -497,19 +539,35 @@ async function deploy() {
     }
   } catch (e) {
     const payload = e.payload || {};
+    const msg = String(e.message || e);
     const shouldReattach =
+      e.status === 429 ||
       Boolean(payload.reattach) ||
       Boolean(payload.jobId) ||
       Boolean(payload.liveJob) ||
-      /already in progress/i.test(String(e.message || ""));
+      /already in progress|cooldown/i.test(msg);
 
     if (shouldReattach) {
+      state.message = "Reattaching to build in progress…";
+      state.error = "";
+      render();
       try {
-        const ok = await reattachFromPayload(
-          payload,
-          String(e.message || e),
-        );
-        if (ok) return;
+        const ok = await reattachFromPayload(payload, null);
+        if (ok) {
+          state.error = "";
+          state.message =
+            state.message || "Reattached to build in progress…";
+          render();
+          return;
+        }
+        // Payload may be incomplete (old server / lost job id) — ask /api/jobs.
+        const resumed = await resumeActiveJob();
+        if (resumed) {
+          state.error = "";
+          state.message = "Reattached to build in progress…";
+          render();
+          return;
+        }
       } catch (reattachErr) {
         state.error = String(reattachErr.message || reattachErr);
         if (!(state.activeJob && isLiveJob(state.activeJob))) {
@@ -518,9 +576,17 @@ async function deploy() {
         render();
         return;
       }
+      state.error =
+        "A deploy is already in progress, but the live job could not be loaded. Pull latest buildswiftlazily, restart ./scripts/start.sh on the Mac, then refresh this page.";
+      state.message = "";
+      if (!(state.activeJob && isLiveJob(state.activeJob))) {
+        state.busy = false;
+      }
+      render();
+      return;
     }
 
-    state.error = String(e.message || e);
+    state.error = msg;
     if (!(state.activeJob && isLiveJob(state.activeJob))) {
       state.busy = false;
     }

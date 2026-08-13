@@ -269,6 +269,11 @@ test("second deploy while inflight returns 429 with reattach jobId", async () =>
   const listed = await list.json();
   assert.equal(listed.liveJobId, firstBody.jobId);
   assert.equal(listed.gateHeld, true);
+  assert.ok(listed.liveJob, "GET /api/jobs should embed liveJob for PWA reattach");
+  assert.equal(listed.liveJob.id, firstBody.jobId);
+  assert.ok(
+    listed.liveJob.status === "queued" || listed.liveJob.status === "running",
+  );
 
   // Wait for first job so gate releases (avoid leaking into other tests)
   let job = jobs.get(firstBody.jobId)!;
