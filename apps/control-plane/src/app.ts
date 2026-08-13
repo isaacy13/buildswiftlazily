@@ -40,7 +40,7 @@ import {
   publicError,
 } from "./security.js";
 import { JobStore } from "./jobs.js";
-import { runLocalDeploy } from "./localDeploy.js";
+import { requestJobCancel, runLocalDeploy } from "./localDeploy.js";
 import { buildSetupChecklist } from "./setup.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -234,7 +234,7 @@ export function createApp(deps: AppDeps) {
   });
 
   app.post("/api/deploy", async (c) => {
-    const gate = deployGate.tryAcquire();
+    const gate = deployGate.tryAcquire(() => jobs.findLive()?.id);
     if (!gate.ok) {
       const live = jobs.findLive();
       const jobId = gate.jobId || live?.id;
@@ -244,6 +244,7 @@ export function createApp(deps: AppDeps) {
           retryAfterSec: gate.retryAfterSec,
           jobId: jobId || null,
           reattach: Boolean(jobId),
+          liveJob: live || (jobId ? jobs.get(jobId) : null) || null,
         },
         429,
       );
@@ -329,7 +330,7 @@ export function createApp(deps: AppDeps) {
         deploy_mode: deployMode,
         platform,
         title,
-      }).finally(() => deployGate.release());
+      }).finally(() => deployGate.releaseIfJob(job.id));
       return c.json({
         engine: "local",
         jobId: job.id,
@@ -345,12 +346,37 @@ export function createApp(deps: AppDeps) {
 
   app.get("/api/jobs", (c) => {
     const live = jobs.findLive();
-    return c.json({ jobs: jobs.list(20), liveJobId: live?.id || null });
+    return c.json({
+      jobs: jobs.list(20),
+      liveJobId: live?.id || deployGate.getInflightJobId() || null,
+      gateHeld: deployGate.isInflight(),
+    });
   });
   app.get("/api/jobs/:id", (c) => {
     const job = jobs.get(c.req.param("id"));
     if (!job) return c.json({ error: "job not found" }, 404);
     return c.json(job);
+  });
+
+  app.post("/api/jobs/:id/cancel", (c) => {
+    const id = c.req.param("id");
+    const job = jobs.get(id);
+    if (!job) return c.json({ error: "job not found" }, 404);
+    if (job.status !== "queued" && job.status !== "running") {
+      return c.json({ error: "job is not running", job }, 409);
+    }
+    requestJobCancel(id);
+    jobs.appendLog(id, "Cancel requested — stopping build…");
+    // Mark cancelled immediately so refresh/reattach stop treating it as live.
+    // runLocalDeploy will also finalize when the child exits.
+    jobs.patch(id, {
+      status: "cancelled",
+      error: "Cancelled",
+      finishedAt: new Date().toISOString(),
+    });
+    deployGate.releaseIfJob(id);
+    logInfo(`job ${id.slice(0, 8)} cancel requested`);
+    return c.json({ ok: true, job: jobs.get(id) });
   });
 
   app.get("/api/deploys", async (c) => {

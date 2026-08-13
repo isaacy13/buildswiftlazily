@@ -202,6 +202,31 @@ test("DeployGate enforces single flight and cooldown", () => {
   if (!again.ok) assert.ok(again.retryAfterSec > 0);
 });
 
+test("DeployGate self-heals stuck inflight with no live job", () => {
+  const gate = new DeployGate(0);
+  assert.equal(gate.tryAcquire().ok, true);
+  // Simulate acquire without bindJob / lost live job
+  const healed = gate.tryAcquire(() => undefined);
+  assert.equal(healed.ok, true);
+  gate.bindJob("job-2");
+  const blocked = gate.tryAcquire(() => "job-2");
+  assert.equal(blocked.ok, false);
+  if (!blocked.ok) assert.equal(blocked.jobId, "job-2");
+});
+
+test("DeployGate recovers jobId from findLive when bind was missed", () => {
+  const gate = new DeployGate(0);
+  assert.equal(gate.tryAcquire().ok, true);
+  // inflight but no bindJob — look up live id
+  const blocked = gate.tryAcquire(() => "recovered-job");
+  assert.equal(blocked.ok, false);
+  if (!blocked.ok) {
+    assert.equal(blocked.jobId, "recovered-job");
+    assert.match(blocked.reason, /already in progress/i);
+  }
+  assert.equal(gate.getInflightJobId(), "recovered-job");
+});
+
 test("JobStore.findLive returns newest queued/running job", () => {
   const jobs = new JobStore();
   jobs.create({
@@ -222,4 +247,6 @@ test("JobStore.findLive returns newest queued/running job", () => {
     status: "running",
   });
   assert.equal(jobs.findLive()?.id, live.id);
+  jobs.patch(live.id, { status: "cancelled" });
+  assert.equal(jobs.findLive(), undefined);
 });

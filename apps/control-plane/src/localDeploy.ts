@@ -212,9 +212,57 @@ export function childEnvForScript(
 const SCRIPT_TIMEOUT_MS = 60 * 60 * 1000;
 const HEARTBEAT_MS = 30_000;
 
+export class JobCancelledError extends Error {
+  constructor(message = "Build cancelled") {
+    super(message);
+    this.name = "JobCancelledError";
+  }
+}
+
+type JobCancelState = {
+  aborted: boolean;
+  killChild: (() => void) | null;
+};
+
+/** Per-job cancel registry so POST /api/jobs/:id/cancel can stop a live build. */
+const jobCancel = new Map<string, JobCancelState>();
+
+function ensureCancelState(jobId: string): JobCancelState {
+  let state = jobCancel.get(jobId);
+  if (!state) {
+    state = { aborted: false, killChild: null };
+    jobCancel.set(jobId, state);
+  }
+  return state;
+}
+
+export function isJobCancelRequested(jobId: string): boolean {
+  return Boolean(jobCancel.get(jobId)?.aborted);
+}
+
+/** Request cancel; kills the current child process group if any. Returns false if unknown job. */
+export function requestJobCancel(jobId: string): boolean {
+  const state = ensureCancelState(jobId);
+  state.aborted = true;
+  try {
+    state.killChild?.();
+  } catch {
+    /* ignore */
+  }
+  return true;
+}
+
+function clearJobCancel(jobId: string): void {
+  jobCancel.delete(jobId);
+}
+
+function throwIfCancelled(jobId: string): void {
+  if (isJobCancelRequested(jobId)) throw new JobCancelledError();
+}
+
 /** Notable lines also echo to the Mac control-plane console (avoid xcodebuild spam). */
 function shouldMirrorToConsole(line: string): boolean {
-  return /error|warning:|archive|export|upload|validat|testflight|building|signing|codesign|ipa|failed|success|compiling|linking|note:|still running|DRY_RUN|Injected|Checkout|ASC |CFBundle|TESTFLIGHT|altool|Authenticat|Processing|App Store/i.test(
+  return /error|warning:|archive|export|upload|validat|testflight|building|signing|codesign|ipa|failed|success|compiling|linking|note:|still running|DRY_RUN|Injected|Checkout|ASC |CFBundle|TESTFLIGHT|altool|Authenticat|Processing|App Store|cancel/i.test(
     line,
   );
 }
@@ -233,12 +281,39 @@ function formatElapsed(ms: number): string {
  * Run a build helper script, streaming stdout/stderr into the job log as lines
  * arrive (buffered exec made long xcodebuild/altool runs look "stuck" for an hour).
  */
+function killProcessTree(child: ReturnType<typeof spawn>): void {
+  const pid = child.pid;
+  if (!pid) return;
+  try {
+    // Negative PID = process group (spawned with detached:true).
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      /* already dead */
+    }
+  }
+  setTimeout(() => {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* ignore */
+      }
+    }
+  }, 8_000).unref?.();
+}
+
 export async function runScript(
   jobId: string,
   jobs: JobStore,
   script: string,
   args: string[],
 ): Promise<{ stdout: string; stderr: string }> {
+  throwIfCancelled(jobId);
   const basename = path.basename(script);
   jobs.appendLog(jobId, `$ ${basename} ${args.join(" ")}`);
   logInfo(`job ${jobId.slice(0, 8)} start ${basename}`);
@@ -247,13 +322,20 @@ export async function runScript(
     const child = spawn(script, args, {
       env: childEnvForScript(basename),
       stdio: ["ignore", "pipe", "pipe"],
+      // Own process group so cancel can SIGTERM xcodebuild + friends.
+      detached: true,
     });
 
+    const cancelState = ensureCancelState(jobId);
     const outLines: string[] = [];
     const errLines: string[] = [];
     let settled = false;
     let lastActivity = Date.now();
     const started = Date.now();
+
+    const stopChild = () => killProcessTree(child);
+    cancelState.killChild = stopChild;
+    if (cancelState.aborted) stopChild();
 
     const onLine = (line: string, stream: "out" | "err") => {
       lastActivity = Date.now();
@@ -274,6 +356,10 @@ export async function runScript(
     rlErr.on("line", (l) => onLine(l, "err"));
 
     const heartbeat = setInterval(() => {
+      if (isJobCancelRequested(jobId)) {
+        stopChild();
+        return;
+      }
       const elapsed = formatElapsed(Date.now() - started);
       const idleSec = Math.floor((Date.now() - lastActivity) / 1000);
       const msg = `… still running ${basename} (${elapsed} elapsed, last output ${idleSec}s ago)`;
@@ -285,10 +371,7 @@ export async function runScript(
       const msg = `TIMEOUT: ${basename} exceeded ${formatElapsed(SCRIPT_TIMEOUT_MS)} — sending SIGTERM`;
       jobs.appendLog(jobId, msg);
       logInfo(`job ${jobId.slice(0, 8)} ${msg}`);
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (!settled) child.kill("SIGKILL");
-      }, 15_000).unref?.();
+      stopChild();
     }, SCRIPT_TIMEOUT_MS);
 
     const finish = (fn: () => void) => {
@@ -296,6 +379,7 @@ export async function runScript(
       settled = true;
       clearInterval(heartbeat);
       clearTimeout(killer);
+      if (cancelState.killChild === stopChild) cancelState.killChild = null;
       rlOut.close();
       rlErr.close();
       fn();
@@ -310,6 +394,10 @@ export async function runScript(
         const stdout = outLines.join("\n");
         const stderr = errLines.join("\n");
         const elapsed = formatElapsed(Date.now() - started);
+        if (isJobCancelRequested(jobId)) {
+          reject(new JobCancelledError());
+          return;
+        }
         if (code === 0) {
           jobs.appendLog(jobId, `${basename} finished OK in ${elapsed}`);
           logInfo(`job ${jobId.slice(0, 8)} ${basename} OK in ${elapsed}`);
@@ -343,6 +431,7 @@ export async function runLocalDeploy(
   const configuration = assertSafeConfiguration(input.configuration || "Release");
   const title = assertSafeTitle(input.title || scheme);
 
+  ensureCancelState(jobId);
   jobs.patch(jobId, { status: "running", platform });
   jobs.appendLog(
     jobId,
@@ -362,6 +451,7 @@ export async function runLocalDeploy(
   fs.mkdirSync(workRoot, { recursive: true });
 
   try {
+    throwIfCancelled(jobId);
     jobs.appendLog(jobId, "Fetching source…");
     let checkout: string;
     if (dry && !env.githubToken) {
@@ -389,6 +479,8 @@ export async function runLocalDeploy(
       checkout = await downloadGithubTarball(env, repository, ref, workRoot);
       jobs.appendLog(jobId, `Checkout ready at ${checkout}`);
     }
+
+    throwIfCancelled(jobId);
 
     const injectSpec = (process.env.BSL_CHECKOUT_INJECT || "").trim();
     if (injectSpec) {
@@ -436,6 +528,8 @@ export async function runLocalDeploy(
       ...(dry ? ["--dry-run"] : []),
     ]);
 
+    throwIfCancelled(jobId);
+
     if (mode === "direct" || mode === "both") {
       if (dry) {
         jobs.appendLog(jobId, "DRY_RUN: skip devicectl install");
@@ -460,6 +554,8 @@ export async function runLocalDeploy(
         }
       }
     }
+
+    throwIfCancelled(jobId);
 
     if (mode === "ota" || mode === "both") {
       const ipa = path.join(outDir, "App.ipa");
@@ -506,6 +602,8 @@ export async function runLocalDeploy(
       jobs.appendLog(jobId, `Install page: ${install}`);
     }
 
+    throwIfCancelled(jobId);
+
     if (mode === "testflight") {
       const ipa = path.join(outDir, "App.ipa");
       if (dry) fs.writeFileSync(ipa, "dry-run-ipa");
@@ -537,12 +635,23 @@ export async function runLocalDeploy(
       });
     }
 
+    throwIfCancelled(jobId);
+
     jobs.patch(jobId, {
       status: "succeeded",
       finishedAt: new Date().toISOString(),
     });
     jobs.appendLog(jobId, "Deploy finished successfully");
   } catch (e) {
+    if (e instanceof JobCancelledError || isJobCancelRequested(jobId)) {
+      jobs.patch(jobId, {
+        status: "cancelled",
+        error: "Cancelled",
+        finishedAt: new Date().toISOString(),
+      });
+      jobs.appendLog(jobId, "Build cancelled");
+      return;
+    }
     const raw = e instanceof Error ? e.message : String(e);
     const blob = `${raw}\n${String((e as { stdout?: string; stderr?: string }).stdout || "")}\n${String((e as { stderr?: string }).stderr || "")}`;
     let error = raw;
@@ -565,5 +674,7 @@ export async function runLocalDeploy(
       finishedAt: new Date().toISOString(),
     });
     jobs.appendLog(jobId, `FAILED: ${error}`);
+  } finally {
+    clearJobCancel(jobId);
   }
 }

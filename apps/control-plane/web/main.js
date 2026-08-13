@@ -30,6 +30,7 @@ const state = {
   activeJobId: null,
   activeJob: null,
   busy: false,
+  cancelling: false,
   message: "",
   error: "",
   warning: "",
@@ -99,6 +100,9 @@ function applyJobOutcome(job) {
     state.error = "";
   } else if (job.status === "failed") {
     state.error = job.error || "Deploy failed — see log.";
+  } else if (job.status === "cancelled") {
+    state.message = "Build cancelled.";
+    state.error = "";
   }
 }
 
@@ -219,6 +223,11 @@ async function resumeActiveJob() {
     jobs = data.jobs || [];
     state.jobs = jobs;
     liveJobId = data.liveJobId || null;
+    // If the gate is held but liveJobId was missing, prefer any live row in the list.
+    if (!liveJobId) {
+      const listedLive = jobs.find((j) => isLiveJob(j));
+      if (listedLive) liveJobId = listedLive.id;
+    }
   } catch {
     /* keep going with remembered job if any */
   }
@@ -257,7 +266,7 @@ async function resumeActiveJob() {
       message: "Reattached to build in progress…",
     });
     await pollJob(live.id);
-    return;
+    return true;
   }
 
   // No live job — still restore the last finished card (Install / logs) if we have one.
@@ -274,6 +283,7 @@ async function resumeActiveJob() {
       adoptJob(finished);
     }
   }
+  return false;
 }
 
 async function selectRepo(fullName, preferredRef, meta) {
@@ -333,7 +343,11 @@ async function pollJob(jobId) {
     state.activeJob = job;
     state.activeJobId = job.id;
     rememberActiveJobId(job.id);
-    if (job.status === "succeeded" || job.status === "failed") {
+    if (
+      job.status === "succeeded" ||
+      job.status === "failed" ||
+      job.status === "cancelled"
+    ) {
       stopPoll();
       state.busy = false;
       applyJobOutcome(job);
@@ -349,9 +363,99 @@ async function pollJob(jobId) {
   render();
 }
 
+async function cancelActiveJob() {
+  const job = state.activeJob;
+  if (!job || !isLiveJob(job) || state.cancelling) return;
+  state.cancelling = true;
+  state.error = "";
+  state.message = "Cancelling build…";
+  render();
+  try {
+    const result = await api(`/api/jobs/${encodeURIComponent(job.id)}/cancel`, {
+      method: "POST",
+      body: "{}",
+    });
+    if (result.job) {
+      adoptJob(result.job);
+      state.message = "Build cancelled.";
+    } else {
+      await pollJob(job.id);
+    }
+    stopPoll();
+    state.busy = false;
+  } catch (e) {
+    state.error = String(e.message || e);
+    // Still try to refresh — cancel may have landed server-side.
+    try {
+      await pollJob(job.id);
+    } catch {
+      /* ignore */
+    }
+  } finally {
+    state.cancelling = false;
+    render();
+  }
+}
+
+async function reattachFromPayload(payload, fallbackMessage) {
+  const reattachId = payload?.jobId || null;
+  const embedded = payload?.liveJob && isLiveJob(payload.liveJob) ? payload.liveJob : null;
+
+  if (embedded) {
+    adoptJob(embedded, {
+      resumePoll: true,
+      message: "Reattached to build in progress…",
+    });
+    // Refresh logs in the background
+    try {
+      await pollJob(embedded.id);
+    } catch {
+      /* keep embedded snapshot */
+    }
+    return true;
+  }
+
+  if (reattachId) {
+    const job = await api(`/api/jobs/${encodeURIComponent(reattachId)}`);
+    if (isLiveJob(job)) {
+      adoptJob(job, {
+        resumePoll: true,
+        message: "Reattached to build in progress…",
+      });
+      await pollJob(job.id);
+      return true;
+    }
+    // Finished while we were attaching — still show the card.
+    adoptJob(job);
+    return true;
+  }
+
+  const resumed = await resumeActiveJob();
+  if (resumed || (state.activeJob && isLiveJob(state.activeJob))) {
+    state.message = "Reattached to build in progress…";
+    state.error = "";
+    render();
+    return true;
+  }
+
+  if (fallbackMessage) state.error = fallbackMessage;
+  return false;
+}
+
 async function deploy() {
   if (!state.scheme?.trim()) {
     state.error = "Enter an Xcode scheme (e.g. GuideAI).";
+    render();
+    return;
+  }
+  // Already watching a live build — just keep the card, don't POST again.
+  if (state.activeJob && isLiveJob(state.activeJob)) {
+    state.message = "Build already in progress — watching logs below.";
+    state.error = "";
+    state.showLogs = true;
+    if (!state.pollTimer) {
+      state.pollTimer = setInterval(() => pollJob(state.activeJob.id), 1500);
+    }
     render();
     return;
   }
@@ -393,29 +497,19 @@ async function deploy() {
     }
   } catch (e) {
     const payload = e.payload || {};
-    const reattachId = payload.jobId || null;
     const shouldReattach =
-      Boolean(payload.reattach && reattachId) ||
+      Boolean(payload.reattach) ||
+      Boolean(payload.jobId) ||
+      Boolean(payload.liveJob) ||
       /already in progress/i.test(String(e.message || ""));
 
     if (shouldReattach) {
       try {
-        if (reattachId) {
-          const job = await api(`/api/jobs/${encodeURIComponent(reattachId)}`);
-          adoptJob(job, {
-            resumePoll: true,
-            message: "Reattached to build in progress…",
-          });
-          await pollJob(job.id);
-          return;
-        }
-        await resumeActiveJob();
-        if (state.activeJob && isLiveJob(state.activeJob)) {
-          state.message = "Reattached to build in progress…";
-          state.error = "";
-          render();
-          return;
-        }
+        const ok = await reattachFromPayload(
+          payload,
+          String(e.message || e),
+        );
+        if (ok) return;
       } catch (reattachErr) {
         state.error = String(reattachErr.message || reattachErr);
         if (!(state.activeJob && isLiveJob(state.activeJob))) {
@@ -596,13 +690,21 @@ function renderJobCard() {
   const latestLog = logs.length ? logs[logs.length - 1] : "";
   const showFullLogs = live || state.showLogs;
   const statusClass =
-    job.status === "succeeded" ? "ok" : job.status === "failed" ? "err" : "run";
+    job.status === "succeeded"
+      ? "ok"
+      : job.status === "failed"
+        ? "err"
+        : job.status === "cancelled"
+          ? "err"
+          : "run";
   const title =
     job.status === "succeeded"
       ? "Ready to install"
       : job.status === "failed"
         ? "Build failed"
-        : "Building…";
+        : job.status === "cancelled"
+          ? "Build cancelled"
+          : "Building…";
   const startedMs = job.createdAt ? Date.parse(job.createdAt) : NaN;
   const elapsed =
     live && !Number.isNaN(startedMs)
@@ -629,6 +731,15 @@ function renderJobCard() {
         ? `<p class="job-latest"><span class="pulse" aria-hidden="true"></span>${escapeHtml(latestLog)}</p>`
         : ""
     }
+    ${
+      live
+        ? `<button type="button" class="secondary" id="cancelJobBtn" ${
+            state.cancelling ? "disabled" : ""
+          } style="margin-top:0.65rem">${
+            state.cancelling ? "Cancelling…" : "Cancel build"
+          }</button>`
+        : ""
+    }
     ${job.installUrl ? `<a class="primary" href="${escapeAttr(job.installUrl)}">Install on this iPhone</a>` : ""}
     ${job.itmsUrl && !job.installUrl ? `<a class="primary" href="${escapeAttr(job.itmsUrl)}">Install via itms-services</a>` : ""}
     ${
@@ -638,7 +749,7 @@ function renderJobCard() {
            <a class="secondary block" href="itms-beta://" style="margin-top:0.5rem">Open TestFlight app</a>`
         : ""
     }
-    ${job.error ? `<p class="error">${escapeHtml(job.error)}</p>` : ""}
+    ${job.error && job.status !== "cancelled" ? `<p class="error">${escapeHtml(job.error)}</p>` : ""}
     ${
       logs.length
         ? `${
@@ -748,7 +859,12 @@ function renderProjects() {
       ? "Build & upload"
       : "Build & install";
 
-  const jobFirst = state.activeJob && (isLiveJob(state.activeJob) || state.activeJob.status === "succeeded");
+  const jobFirst =
+    state.activeJob &&
+    (isLiveJob(state.activeJob) ||
+      state.activeJob.status === "succeeded" ||
+      state.activeJob.status === "failed" ||
+      state.activeJob.status === "cancelled");
 
   return `
     ${renderSetupBanner()}
@@ -1020,7 +1136,13 @@ function renderStatus() {
     ? localJobs
         .map(
           (j) => `<div class="list-item">
-            <span class="badge ${j.status === "succeeded" ? "ok" : j.status === "failed" ? "err" : "run"}">${escapeHtml(j.status)}</span>
+            <span class="badge ${
+              j.status === "succeeded"
+                ? "ok"
+                : j.status === "failed" || j.status === "cancelled"
+                  ? "err"
+                  : "run"
+            }">${escapeHtml(j.status)}</span>
             <span class="title">${escapeHtml(j.scheme)}</span>
             <div class="muted">${escapeHtml(j.ref)} · ${escapeHtml(fmtTime(j.updatedAt))}</div>
             ${j.installUrl ? `<a class="secondary" href="${escapeAttr(j.installUrl)}" style="margin-top:0.5rem">Install</a>` : ""}
@@ -1190,6 +1312,8 @@ function bindViewEvents(view) {
     engineSelect.addEventListener("change", (e) => (state.engine = e.target.value));
   const deployBtn = view.querySelector("#deployBtn");
   if (deployBtn) deployBtn.addEventListener("click", deploy);
+  const cancelJobBtn = view.querySelector("#cancelJobBtn");
+  if (cancelJobBtn) cancelJobBtn.addEventListener("click", cancelActiveJob);
   view.querySelectorAll(".pick-ios").forEach((btn) =>
     btn.addEventListener("click", () => {
       state.projectPath = btn.getAttribute("data-path") || ".";
@@ -1351,5 +1475,29 @@ function escapeHtml(s) {
 function escapeAttr(s) {
   return escapeHtml(s).replaceAll("'", "&#39;");
 }
+
+let resumeOnShowTimer = null;
+function scheduleResumeOnShow() {
+  if (resumeOnShowTimer) clearTimeout(resumeOnShowTimer);
+  resumeOnShowTimer = setTimeout(async () => {
+    resumeOnShowTimer = null;
+    // Skip if we are already polling a live job.
+    if (state.pollTimer && state.activeJob && isLiveJob(state.activeJob)) return;
+    try {
+      const resumed = await resumeActiveJob();
+      if (resumed) render();
+    } catch {
+      /* ignore */
+    }
+  }, 200);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") scheduleResumeOnShow();
+});
+window.addEventListener("pageshow", (e) => {
+  // BFCache restores can leave timers dead — always try to reattach.
+  if (e.persisted) scheduleResumeOnShow();
+});
 
 bootstrap();
