@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { redact } from "./security.js";
 
-export type JobStatus = "queued" | "running" | "succeeded" | "failed";
+export type JobStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
 
 export type DeployJob = {
   id: string;
@@ -22,6 +27,10 @@ export type DeployJob = {
   updatedAt: string;
   finishedAt?: string;
 };
+
+export function isLiveJobStatus(status: JobStatus | string | undefined): boolean {
+  return status === "queued" || status === "running";
+}
 
 export class JobStore {
   private jobs = new Map<string, DeployJob>();
@@ -62,7 +71,7 @@ export class JobStore {
   findLive(): DeployJob | undefined {
     for (const id of this.order) {
       const job = this.jobs.get(id);
-      if (job && (job.status === "queued" || job.status === "running")) return job;
+      if (job && isLiveJobStatus(job.status)) return job;
     }
     return undefined;
   }

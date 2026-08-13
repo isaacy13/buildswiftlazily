@@ -98,17 +98,31 @@ export class DeployGate {
 
   constructor(private readonly cooldownMs = 15_000) {}
 
-  tryAcquire():
+  /**
+   * @param findLiveJobId optional lookup used to recover jobId and to self-heal
+   *   a stuck gate (inflight with no live job / no bound id).
+   */
+  tryAcquire(
+    findLiveJobId?: () => string | undefined,
+  ):
     | { ok: true }
     | { ok: false; retryAfterSec: number; reason: string; jobId?: string } {
     const now = Date.now();
     if (this.inflight) {
-      return {
-        ok: false,
-        retryAfterSec: 30,
-        reason: "A deploy is already in progress",
-        jobId: this.inflightJobId || undefined,
-      };
+      const liveId = this.inflightJobId || findLiveJobId?.() || undefined;
+      if (!liveId) {
+        // Gate held but nothing to reattach to — release so the operator is not stuck.
+        this.inflight = false;
+        this.inflightJobId = null;
+      } else {
+        if (!this.inflightJobId) this.inflightJobId = liveId;
+        return {
+          ok: false,
+          retryAfterSec: 30,
+          reason: "A deploy is already in progress",
+          jobId: liveId,
+        };
+      }
     }
     const since = now - this.lastStartMs;
     if (this.lastStartMs && since < this.cooldownMs) {
@@ -117,7 +131,7 @@ export class DeployGate {
         ok: false,
         retryAfterSec,
         reason: `Deploy cooldown — try again in ${retryAfterSec}s`,
-        jobId: this.inflightJobId || undefined,
+        jobId: this.inflightJobId || findLiveJobId?.() || undefined,
       };
     }
     this.inflight = true;
@@ -128,6 +142,21 @@ export class DeployGate {
   /** Attach the job id once the local deploy is queued (for reattach on 429). */
   bindJob(jobId: string): void {
     this.inflightJobId = jobId;
+  }
+
+  getInflightJobId(): string | null {
+    return this.inflightJobId;
+  }
+
+  isInflight(): boolean {
+    return this.inflight;
+  }
+
+  /** Release only if this job still owns the gate (cancel / finish). */
+  releaseIfJob(jobId: string): void {
+    if (this.inflightJobId === jobId || (!this.inflightJobId && this.inflight)) {
+      this.release();
+    }
   }
 
   release(): void {

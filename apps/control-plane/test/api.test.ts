@@ -261,19 +261,139 @@ test("second deploy while inflight returns 429 with reattach jobId", async () =>
   assert.match(blocked.error, /already in progress/i);
   assert.equal(blocked.reattach, true);
   assert.equal(blocked.jobId, firstBody.jobId);
+  assert.ok(blocked.liveJob);
+  assert.equal(blocked.liveJob.id, firstBody.jobId);
 
   const list = await app.request("/api/jobs");
   assert.equal(list.status, 200);
   const listed = await list.json();
   assert.equal(listed.liveJobId, firstBody.jobId);
+  assert.equal(listed.gateHeld, true);
 
   // Wait for first job so gate releases (avoid leaking into other tests)
   let job = jobs.get(firstBody.jobId)!;
-  for (let i = 0; i < 40 && job.status !== "succeeded" && job.status !== "failed"; i++) {
+  for (let i = 0; i < 40 && job.status !== "succeeded" && job.status !== "failed" && job.status !== "cancelled"; i++) {
     await new Promise((r) => setTimeout(r, 100));
     job = jobs.get(firstBody.jobId)!;
   }
   delete process.env.BSL_DRY_RUN;
+});
+
+test("cancel stops a live job and frees the deploy gate", async () => {
+  process.env.BSL_DRY_RUN = "1";
+  const jobs = new JobStore();
+  const { app } = createApp({ env: testEnv(), repoConfig, jobs });
+
+  // Start a real deploy, then cancel before it finishes.
+  // Keep the deploy alive with a slow child by cancelling via API while status is live.
+  const first = await app.request("/api/deploy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      repository: "isaacy13/GuideAI",
+      ref: "main",
+      scheme: "GuideAI",
+      deploy_mode: "ota",
+      engine: "local",
+    }),
+  });
+  assert.equal(first.status, 200);
+  const { jobId } = await first.json();
+  assert.ok(jobId);
+
+  // Poll until running or already terminal (dry-run can be very fast).
+  let job = jobs.get(jobId)!;
+  for (let i = 0; i < 50 && job.status === "queued"; i++) {
+    await new Promise((r) => setTimeout(r, 20));
+    job = jobs.get(jobId)!;
+  }
+
+  if (job.status === "queued" || job.status === "running") {
+    const cancel = await app.request(`/api/jobs/${jobId}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(cancel.status, 200);
+    const cancelled = await cancel.json();
+    assert.equal(cancelled.ok, true);
+    assert.equal(cancelled.job.status, "cancelled");
+
+    const list = await app.request("/api/jobs");
+    const listed = await list.json();
+    assert.equal(listed.liveJobId, null);
+    assert.equal(listed.gateHeld, false);
+
+    const again = await app.request(`/api/jobs/${jobId}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(again.status, 409);
+  } else {
+    // Deploy finished before we could cancel — still verify cancel rejects finished jobs.
+    const again = await app.request(`/api/jobs/${jobId}/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(again.status, 409);
+  }
+
+  // Direct cancel on a synthetic running job (deterministic).
+  const synthetic = jobs.create({
+    engine: "local",
+    status: "running",
+    repository: "isaacy13/GuideAI",
+    ref: "main",
+    scheme: "GuideAI",
+    deployMode: "ota",
+  });
+  const synCancel = await app.request(`/api/jobs/${synthetic.id}/cancel`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}",
+  });
+  assert.equal(synCancel.status, 200);
+  assert.equal((await synCancel.json()).job.status, "cancelled");
+  assert.equal(jobs.get(synthetic.id)?.status, "cancelled");
+
+  delete process.env.BSL_DRY_RUN;
+});
+
+test("runScript abort on cancel rejects with JobCancelledError", async () => {
+  const { requestJobCancel, JobCancelledError } = await import(
+    "../src/localDeploy.js"
+  );
+  const jobs = new JobStore();
+  const job = jobs.create({
+    engine: "local",
+    repository: "isaacy13/GuideAI",
+    ref: "main",
+    scheme: "GuideAI",
+    deployMode: "ota",
+  });
+  const script = path.join(os.tmpdir(), `bsl-cancel-script-${Date.now()}.sh`);
+  fs.writeFileSync(
+    script,
+    "#!/bin/sh\necho phase-one\nsleep 20\necho phase-two\n",
+    { mode: 0o755 },
+  );
+  const running = runScript(job.id, jobs, script, []);
+  // Wait until first line, then cancel
+  let sawLive = false;
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    const logs = jobs.get(job.id)?.logs || [];
+    if (logs.some((l) => /phase-one/.test(l))) {
+      sawLive = true;
+      break;
+    }
+  }
+  assert.equal(sawLive, true);
+  requestJobCancel(job.id);
+  await assert.rejects(running, (err: unknown) => err instanceof JobCancelledError);
+  fs.unlinkSync(script);
 });
 
 test("runScript streams lines into the job log before exit", async () => {

@@ -94,9 +94,12 @@ async function downloadGithubTarball(
   repository: string,
   ref: string,
   destDir: string,
+  onProgress?: (msg: string) => void,
 ): Promise<string> {
   if (!env.githubToken) throw new Error("GITHUB_TOKEN required to fetch source");
   const url = `https://api.github.com/repos/${repository}/tarball/${encodeURIComponent(ref)}`;
+  const started = Date.now();
+  onProgress?.(`Downloading ${repository}@${ref} tarball from GitHub…`);
   const res = await fetch(url, {
     headers: {
       Authorization: `Bearer ${env.githubToken}`,
@@ -109,9 +112,19 @@ async function downloadGithubTarball(
   if (!res.ok || !res.body) {
     throw new Error(`Failed to download ${repository}@${ref}: ${res.status}`);
   }
+  const contentLength = Number(res.headers.get("content-length") || 0);
+  if (contentLength > 0) {
+    onProgress?.(
+      `Download started (${Math.round(contentLength / (1024 * 1024))} MiB announced)…`,
+    );
+  }
   fs.mkdirSync(destDir, { recursive: true });
   const tgz = path.join(destDir, "src.tgz");
   await pipeline(res.body as unknown as NodeJS.ReadableStream, createWriteStream(tgz));
+  const size = fs.statSync(tgz).size;
+  onProgress?.(
+    `Tarball downloaded (${Math.round(size / 1024)} KiB) in ${formatElapsed(Date.now() - started)} — extracting…`,
+  );
   const extractTo = path.join(destDir, "src");
   fs.mkdirSync(extractTo, { recursive: true });
   await assertSafeTarball(tgz);
@@ -123,6 +136,9 @@ async function downloadGithubTarball(
     "--strip-components=1",
   ]);
   assertNoSymlinkEscape(extractTo);
+  onProgress?.(
+    `Checkout extracted in ${formatElapsed(Date.now() - started)} → ${extractTo}`,
+  );
   return extractTo;
 }
 
@@ -210,11 +226,66 @@ export function childEnvForScript(
 }
 
 const SCRIPT_TIMEOUT_MS = 60 * 60 * 1000;
-const HEARTBEAT_MS = 30_000;
+/** Console + job-log heartbeat while a child script is quiet (xcodebuild/altool). */
+const HEARTBEAT_MS = 15_000;
 
-/** Notable lines also echo to the Mac control-plane console (avoid xcodebuild spam). */
+export class JobCancelledError extends Error {
+  constructor(message = "Build cancelled") {
+    super(message);
+    this.name = "JobCancelledError";
+  }
+}
+
+type JobCancelState = {
+  aborted: boolean;
+  killChild: (() => void) | null;
+};
+
+/** Per-job cancel registry so POST /api/jobs/:id/cancel can stop a live build. */
+const jobCancel = new Map<string, JobCancelState>();
+
+function ensureCancelState(jobId: string): JobCancelState {
+  let state = jobCancel.get(jobId);
+  if (!state) {
+    state = { aborted: false, killChild: null };
+    jobCancel.set(jobId, state);
+  }
+  return state;
+}
+
+export function isJobCancelRequested(jobId: string): boolean {
+  return Boolean(jobCancel.get(jobId)?.aborted);
+}
+
+/** Request cancel; kills the current child process group if any. Returns false if unknown job. */
+export function requestJobCancel(jobId: string): boolean {
+  const state = ensureCancelState(jobId);
+  state.aborted = true;
+  try {
+    state.killChild?.();
+  } catch {
+    /* ignore */
+  }
+  return true;
+}
+
+function clearJobCancel(jobId: string): void {
+  jobCancel.delete(jobId);
+}
+
+function throwIfCancelled(jobId: string): void {
+  if (isJobCancelRequested(jobId)) throw new JobCancelledError();
+}
+
+/** Job log + Mac console (so a quiet Terminal is still useful mid-build). */
+function logJob(jobs: JobStore, jobId: string, message: string): void {
+  jobs.appendLog(jobId, message);
+  logInfo(`job ${jobId.slice(0, 8)} ${message}`);
+}
+
+/** Notable script lines also echo to the Mac control-plane console (avoid xcodebuild spam). */
 function shouldMirrorToConsole(line: string): boolean {
-  return /error|warning:|archive|export|upload|validat|testflight|building|signing|codesign|ipa|failed|success|compiling|linking|note:|still running|DRY_RUN|Injected|Checkout|ASC |CFBundle|TESTFLIGHT|altool|Authenticat|Processing|App Store/i.test(
+  return /error|warning:|archive|export|upload|validat|testflight|building|signing|codesign|ipa|failed|success|compiling|linking|note:|still running|DRY_RUN|Injected|Checkout|ASC |CFBundle|TESTFLIGHT|altool|Authenticat|Processing|App Store|cancel|phase|Provisioning|Touch|Compile|SwiftDriver|CodeSign|Embed|CopySwift|WriteAuxiliary|CreateBuildDirectory|GatherProvisioning|Check dependencies|Signing Identity|Export .* succeeded|Uploaded|Delivery|TRANSPORT|statusCode|The package is ready/i.test(
     line,
   );
 }
@@ -229,42 +300,98 @@ function formatElapsed(ms: number): string {
   return `${hr}h ${min % 60}m`;
 }
 
+function clip(text: string, max = 160): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
 /**
  * Run a build helper script, streaming stdout/stderr into the job log as lines
  * arrive (buffered exec made long xcodebuild/altool runs look "stuck" for an hour).
  */
+function killProcessTree(child: ReturnType<typeof spawn>): void {
+  const pid = child.pid;
+  if (!pid) return;
+  try {
+    // Negative PID = process group (spawned with detached:true).
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      /* already dead */
+    }
+  }
+  setTimeout(() => {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* ignore */
+      }
+    }
+  }, 8_000).unref?.();
+}
+
 export async function runScript(
   jobId: string,
   jobs: JobStore,
   script: string,
   args: string[],
 ): Promise<{ stdout: string; stderr: string }> {
+  throwIfCancelled(jobId);
   const basename = path.basename(script);
-  jobs.appendLog(jobId, `$ ${basename} ${args.join(" ")}`);
-  logInfo(`job ${jobId.slice(0, 8)} start ${basename}`);
+  const shortArgs = args
+    .map((a, i) => {
+      // Keep flags readable; clip long paths.
+      if (a.startsWith("--")) return a;
+      const prev = args[i - 1];
+      if (prev === "--root" || prev === "--out-dir" || prev === "--ipa" || prev === "--app") {
+        return clip(a, 64);
+      }
+      return a;
+    })
+    .join(" ");
+  logJob(jobs, jobId, `$ ${basename} ${shortArgs}`);
 
   return new Promise((resolve, reject) => {
     const child = spawn(script, args, {
       env: childEnvForScript(basename),
       stdio: ["ignore", "pipe", "pipe"],
+      // Own process group so cancel can SIGTERM xcodebuild + friends.
+      detached: true,
     });
 
+    const cancelState = ensureCancelState(jobId);
     const outLines: string[] = [];
     const errLines: string[] = [];
     let settled = false;
     let lastActivity = Date.now();
+    let lastLine = "";
+    let lineCount = 0;
     const started = Date.now();
+
+    logInfo(
+      `job ${jobId.slice(0, 8)} start ${basename} pid=${child.pid ?? "?"} (heartbeat every ${HEARTBEAT_MS / 1000}s while quiet)`,
+    );
+
+    const stopChild = () => killProcessTree(child);
+    cancelState.killChild = stopChild;
+    if (cancelState.aborted) stopChild();
 
     const onLine = (line: string, stream: "out" | "err") => {
       lastActivity = Date.now();
       const text = line.replace(/\r/g, "").trimEnd();
       if (!text.trim()) return;
+      lineCount += 1;
+      lastLine = text;
       if (stream === "out") outLines.push(text);
       else errLines.push(text);
       jobs.appendLog(jobId, text);
       if (shouldMirrorToConsole(text)) {
-        const clipped = text.length > 220 ? `${text.slice(0, 200)}…` : text;
-        logInfo(`[${basename}] ${clipped}`);
+        logInfo(`[${basename}] ${clip(text, 220)}`);
       }
     };
 
@@ -274,21 +401,22 @@ export async function runScript(
     rlErr.on("line", (l) => onLine(l, "err"));
 
     const heartbeat = setInterval(() => {
+      if (isJobCancelRequested(jobId)) {
+        stopChild();
+        return;
+      }
       const elapsed = formatElapsed(Date.now() - started);
       const idleSec = Math.floor((Date.now() - lastActivity) / 1000);
-      const msg = `… still running ${basename} (${elapsed} elapsed, last output ${idleSec}s ago)`;
-      jobs.appendLog(jobId, msg);
-      logInfo(`job ${jobId.slice(0, 8)} ${msg}`);
+      const last = lastLine ? clip(lastLine, 100) : "(no output yet)";
+      const msg = `… still running ${basename} (${elapsed} elapsed, quiet ${idleSec}s, ${lineCount} lines) last: ${last}`;
+      // Heartbeats always hit the Mac console — this is how you tell archive/upload is alive.
+      logJob(jobs, jobId, msg);
     }, HEARTBEAT_MS);
 
     const killer = setTimeout(() => {
       const msg = `TIMEOUT: ${basename} exceeded ${formatElapsed(SCRIPT_TIMEOUT_MS)} — sending SIGTERM`;
-      jobs.appendLog(jobId, msg);
-      logInfo(`job ${jobId.slice(0, 8)} ${msg}`);
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (!settled) child.kill("SIGKILL");
-      }, 15_000).unref?.();
+      logJob(jobs, jobId, msg);
+      stopChild();
     }, SCRIPT_TIMEOUT_MS);
 
     const finish = (fn: () => void) => {
@@ -296,6 +424,7 @@ export async function runScript(
       settled = true;
       clearInterval(heartbeat);
       clearTimeout(killer);
+      if (cancelState.killChild === stopChild) cancelState.killChild = null;
       rlOut.close();
       rlErr.close();
       fn();
@@ -310,12 +439,26 @@ export async function runScript(
         const stdout = outLines.join("\n");
         const stderr = errLines.join("\n");
         const elapsed = formatElapsed(Date.now() - started);
+        if (isJobCancelRequested(jobId)) {
+          logInfo(
+            `job ${jobId.slice(0, 8)} ${basename} stopped after cancel (${elapsed}, ${lineCount} lines)`,
+          );
+          reject(new JobCancelledError());
+          return;
+        }
         if (code === 0) {
-          jobs.appendLog(jobId, `${basename} finished OK in ${elapsed}`);
-          logInfo(`job ${jobId.slice(0, 8)} ${basename} OK in ${elapsed}`);
+          logJob(
+            jobs,
+            jobId,
+            `${basename} finished OK in ${elapsed} (${lineCount} log lines)`,
+          );
           resolve({ stdout, stderr });
           return;
         }
+        logInfo(
+          `job ${jobId.slice(0, 8)} ${basename} FAILED exit=${code ?? "?"}${signal ? ` signal=${signal}` : ""} after ${elapsed}`,
+        );
+        if (lastLine) logInfo(`job ${jobId.slice(0, 8)} last output: ${clip(lastLine, 200)}`);
         const err = Object.assign(
           new Error(
             `${basename} exited ${code ?? "?"}${signal ? ` signal=${signal}` : ""} after ${elapsed}`,
@@ -343,27 +486,34 @@ export async function runLocalDeploy(
   const configuration = assertSafeConfiguration(input.configuration || "Release");
   const title = assertSafeTitle(input.title || scheme);
 
+  ensureCancelState(jobId);
   jobs.patch(jobId, { status: "running", platform });
-  jobs.appendLog(
-    jobId,
-    `Local deploy ${repository}@${ref} scheme=${scheme} mode=${mode} platform=${platform}`,
+  const jobStarted = Date.now();
+  const phase = (msg: string) => logJob(jobs, jobId, msg);
+  phase(
+    `Local deploy ${repository}@${ref} scheme=${scheme} mode=${mode} platform=${platform} configuration=${configuration}`,
   );
 
   const forceDry = process.env.BSL_DRY_RUN === "1";
   const dry = forceDry || !hasXcodebuild();
   if (dry && !forceDry) {
-    jobs.appendLog(
-      jobId,
+    phase(
       "xcodebuild not found — DRY simulation (normal on non-Mac CI; on your Mac this uses real Xcode)",
     );
+  } else if (forceDry) {
+    phase("BSL_DRY_RUN=1 — skipping real Xcode / ASC calls");
+  } else {
+    phase("Xcode available — real archive (this can look quiet for many minutes)");
   }
 
   const workRoot = path.join(env.artifactRoot, "work", jobId);
   fs.mkdirSync(workRoot, { recursive: true });
 
   try {
-    jobs.appendLog(jobId, "Fetching source…");
+    throwIfCancelled(jobId);
+    phase("Phase: fetch source");
     let checkout: string;
+    const onFetch = (msg: string) => phase(msg);
     if (dry && !env.githubToken) {
       checkout = path.join(workRoot, "fixture");
       fs.mkdirSync(path.join(checkout, "Demo.xcodeproj"), { recursive: true });
@@ -371,13 +521,18 @@ export async function runLocalDeploy(
         path.join(checkout, "Demo.xcodeproj", "project.pbxproj"),
         "// fixture\n",
       );
-      jobs.appendLog(jobId, "Using local fixture project (no token / dry-run)");
+      phase("Using local fixture project (no token / dry-run)");
     } else if (dry && env.githubToken) {
       try {
-        checkout = await downloadGithubTarball(env, repository, ref, workRoot);
-        jobs.appendLog(jobId, `Checkout ready at ${checkout}`);
+        checkout = await downloadGithubTarball(
+          env,
+          repository,
+          ref,
+          workRoot,
+          onFetch,
+        );
       } catch (e) {
-        jobs.appendLog(jobId, `Tarball fetch failed (${e}); using fixture`);
+        phase(`Tarball fetch failed (${e}); using fixture`);
         checkout = path.join(workRoot, "fixture");
         fs.mkdirSync(path.join(checkout, `${scheme}.xcodeproj`), { recursive: true });
         fs.writeFileSync(
@@ -386,16 +541,25 @@ export async function runLocalDeploy(
         );
       }
     } else {
-      checkout = await downloadGithubTarball(env, repository, ref, workRoot);
-      jobs.appendLog(jobId, `Checkout ready at ${checkout}`);
+      checkout = await downloadGithubTarball(
+        env,
+        repository,
+        ref,
+        workRoot,
+        onFetch,
+      );
     }
+
+    throwIfCancelled(jobId);
 
     const injectSpec = (process.env.BSL_CHECKOUT_INJECT || "").trim();
     if (injectSpec) {
       const copied = injectCheckoutFiles(checkout, injectSpec);
       for (const c of copied) {
-        jobs.appendLog(jobId, `Injected ${c.dest} from local file`);
+        phase(`Injected ${c.dest} from local file`);
       }
+    } else {
+      phase("No BSL_CHECKOUT_INJECT entries");
     }
 
     const outDir = path.join(env.artifactRoot, "builds", jobId);
@@ -411,11 +575,10 @@ export async function runLocalDeploy(
             ? "both"
             : "ota";
 
-    jobs.appendLog(
-      jobId,
+    phase(
       mode === "testflight"
-        ? "Starting Xcode archive (often 10–40+ min). Live log below — keep this Mac awake."
-        : "Starting Xcode archive. Live log below — keep this Mac awake.",
+        ? "Phase: Xcode archive + App Store export (often 10–40+ min). Keep Mac awake; heartbeats mean it is still working."
+        : "Phase: Xcode archive. Keep Mac awake; heartbeats mean it is still working.",
     );
     await runScript(jobId, jobs, buildScript, [
       "--root",
@@ -436,9 +599,11 @@ export async function runLocalDeploy(
       ...(dry ? ["--dry-run"] : []),
     ]);
 
+    throwIfCancelled(jobId);
+
     if (mode === "direct" || mode === "both") {
       if (dry) {
-        jobs.appendLog(jobId, "DRY_RUN: skip devicectl install");
+        phase("DRY_RUN: skip devicectl install");
       } else {
         const appPathFile = path.join(outDir, "app_path.txt");
         if (fs.existsSync(appPathFile)) {
@@ -451,17 +616,23 @@ export async function runLocalDeploy(
             throw new Error("App path escapes build output directory");
           }
           const deviceClass = platform === "watchos" ? "watch" : "phone";
+          phase(`Phase: direct install to paired ${deviceClass}`);
           await runScript(jobId, jobs, path.join(REPO_ROOT, "scripts/install-direct.sh"), [
             "--app",
             resolved,
             "--device-class",
             deviceClass,
           ]);
+        } else {
+          phase("No app_path.txt after build — skipping direct install");
         }
       }
     }
 
+    throwIfCancelled(jobId);
+
     if (mode === "ota" || mode === "both") {
+      phase("Phase: publish OTA install page");
       const ipa = path.join(outDir, "App.ipa");
       if (dry) fs.writeFileSync(ipa, "dry-run-ipa");
       if (!fs.existsSync(ipa)) throw new Error("IPA missing after build");
@@ -503,21 +674,23 @@ export async function runLocalDeploy(
       const install = serve.stdout.match(/^INSTALL_URL=(.+)$/m)?.[1];
       const itms = serve.stdout.match(/^ITMS_URL=(.+)$/m)?.[1];
       jobs.patch(jobId, { installUrl: install, itmsUrl: itms });
-      jobs.appendLog(jobId, `Install page: ${install}`);
+      phase(`Install page: ${install}`);
     }
+
+    throwIfCancelled(jobId);
 
     if (mode === "testflight") {
       const ipa = path.join(outDir, "App.ipa");
       if (dry) fs.writeFileSync(ipa, "dry-run-ipa");
       if (!fs.existsSync(ipa)) throw new Error("IPA missing after build");
+      const ipaSize = fs.existsSync(ipa) ? fs.statSync(ipa).size : 0;
       let bver = "";
       if (fs.existsSync(path.join(outDir, "bundle_version.txt"))) {
         bver = fs.readFileSync(path.join(outDir, "bundle_version.txt"), "utf8").trim();
       }
-      if (bver) jobs.appendLog(jobId, `CFBundleVersion=${bver} (must be unique per upload)`);
-      jobs.appendLog(
-        jobId,
-        "Uploading IPA to App Store Connect (altool). Do not Ctrl+C the Mac control plane.",
+      if (bver) phase(`CFBundleVersion=${bver} (must be unique per upload)`);
+      phase(
+        `Phase: TestFlight upload via altool (${Math.round(ipaSize / (1024 * 1024))} MiB IPA). Do not Ctrl+C — quiet periods are normal.`,
       );
       const tfArgs = ["--ipa", ipa, "--platform", platform];
       if (dry) tfArgs.push("--dry-run");
@@ -535,14 +708,32 @@ export async function runLocalDeploy(
             ? "Upload accepted. Check App Store Connect → TestFlight → Builds (not only the phone app). Processing is often minutes; Missing Compliance can stall for hours."
             : "Upload finished without TESTFLIGHT_UPLOAD=ok — check the log. If you Ctrl+C’d the Mac shell, re-run; the upload was likely aborted.",
       });
+      phase(
+        dry
+          ? "TestFlight dry-run finished"
+          : uploaded
+            ? "TestFlight upload accepted by ASC"
+            : "TestFlight upload finished WITHOUT TESTFLIGHT_UPLOAD=ok — see log",
+      );
     }
 
+    throwIfCancelled(jobId);
+
+    phase(`Deploy finished successfully in ${formatElapsed(Date.now() - jobStarted)}`);
     jobs.patch(jobId, {
       status: "succeeded",
       finishedAt: new Date().toISOString(),
     });
-    jobs.appendLog(jobId, "Deploy finished successfully");
   } catch (e) {
+    if (e instanceof JobCancelledError || isJobCancelRequested(jobId)) {
+      phase(`Build cancelled after ${formatElapsed(Date.now() - jobStarted)}`);
+      jobs.patch(jobId, {
+        status: "cancelled",
+        error: "Cancelled",
+        finishedAt: new Date().toISOString(),
+      });
+      return;
+    }
     const raw = e instanceof Error ? e.message : String(e);
     const blob = `${raw}\n${String((e as { stdout?: string; stderr?: string }).stdout || "")}\n${String((e as { stderr?: string }).stderr || "")}`;
     let error = raw;
@@ -564,6 +755,8 @@ export async function runLocalDeploy(
       error,
       finishedAt: new Date().toISOString(),
     });
-    jobs.appendLog(jobId, `FAILED: ${error}`);
+    phase(`FAILED after ${formatElapsed(Date.now() - jobStarted)}: ${error}`);
+  } finally {
+    clearJobCancel(jobId);
   }
 }
