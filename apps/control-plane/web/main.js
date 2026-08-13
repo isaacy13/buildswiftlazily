@@ -821,9 +821,15 @@ function renderJobCard() {
         ? `${
             !live
               ? `<button type="button" class="text-btn" id="toggleLogs">${state.showLogs ? "Hide log" : "Show log"}</button>`
-              : `<p class="hint" style="margin-top:0.65rem">Live log · updates every few seconds</p>`
+              : `<p class="hint" style="margin-top:0.65rem">Live log · pinned to latest</p>`
           }
-           ${showFullLogs ? `<pre class="log">${escapeHtml(logs.slice(-40).join("\n"))}</pre>` : ""}`
+           ${
+             showFullLogs
+               ? `<pre class="log" id="liveLog" data-live="${live ? "1" : "0"}">${escapeHtml(
+                   logs.slice(-80).join("\n"),
+                 )}</pre>`
+               : ""
+           }`
         : live
           ? `<p class="muted" style="margin-top:0.65rem">Waiting for first log line…</p>`
           : ""
@@ -1476,6 +1482,10 @@ function bindViewEvents(view) {
 
 /** Stable identity for #view content; scroll is kept only across same-key renders. */
 let lastScrollViewKey = "";
+/** Live log follows the bottom unless the user scrolls up to read older lines. */
+let liveLogFollowBottom = true;
+let liveLogScrollBound = null;
+
 function scrollViewKey() {
   if (state.tab === "cursor") {
     if (state.openingAgentId || state.agentDetail) return "cursor:detail";
@@ -1484,9 +1494,37 @@ function scrollViewKey() {
   return state.tab;
 }
 
-function nearBottom(el, px = 48) {
+function nearBottom(el, px = 64) {
   if (!el) return true;
   return el.scrollHeight - el.scrollTop - el.clientHeight <= px;
+}
+
+function bindLiveLogFollow(logEl) {
+  if (!logEl || logEl === liveLogScrollBound) return;
+  liveLogScrollBound = logEl;
+  logEl.addEventListener(
+    "scroll",
+    () => {
+      liveLogFollowBottom = nearBottom(logEl);
+    },
+    { passive: true },
+  );
+}
+
+function pinLiveLogToBottom(logEl) {
+  if (!logEl) return;
+  const apply = () => {
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+  apply();
+  requestAnimationFrame(() => {
+    apply();
+    requestAnimationFrame(apply);
+  });
+}
+
+function formatLiveLogText(logs) {
+  return (logs || []).slice(-80).join("\n");
 }
 
 /** Update shell chrome (pill + tabs) without touching #view. */
@@ -1520,7 +1558,7 @@ function updateShellChrome() {
 }
 
 /**
- * In-place patch for live job polls so #view / log console don't jump to top.
+ * In-place patch for live job polls so #view / log console don't remount.
  * Returns true when the DOM was patched without a full innerHTML swap.
  */
 function tryPatchLiveJobCard(view) {
@@ -1529,6 +1567,9 @@ function tryPatchLiveJobCard(view) {
   if (!job || !isLiveJob(job)) return false;
   const card = view.querySelector(".job-card.is-live");
   if (!card) return false;
+
+  // Freeze the page scroll while we mutate the card (iOS scroll-anchoring).
+  const viewScrollTop = view.scrollTop;
 
   const badge = card.querySelector(".badge");
   if (badge) {
@@ -1549,9 +1590,10 @@ function tryPatchLiveJobCard(view) {
           min < 60 ? `${min}m ${sec % 60}s` : `${Math.floor(min / 60)}h ${min % 60}m`;
       }
     }
-    meta.textContent = `${job.scheme || job.repository} · ${job.ref} · ${job.deployMode}${
+    const nextMeta = `${job.scheme || job.repository} · ${job.ref} · ${job.deployMode}${
       elapsed ? ` · ${elapsed}` : ""
     }`;
+    if (meta.textContent !== nextMeta) meta.textContent = nextMeta;
   }
 
   const logs = job.logs || [];
@@ -1565,7 +1607,12 @@ function tryPatchLiveJobCard(view) {
       if (cancelBtn) card.insertBefore(latest, cancelBtn);
       else card.appendChild(latest);
     }
-    latest.innerHTML = `<span class="pulse" aria-hidden="true"></span>${escapeHtml(latestLog)}`;
+    // Only touch DOM when the headline line actually changed.
+    const nextLatest = latestLog;
+    if (latest.dataset.line !== nextLatest) {
+      latest.dataset.line = nextLatest;
+      latest.innerHTML = `<span class="pulse" aria-hidden="true"></span>${escapeHtml(nextLatest)}`;
+    }
   } else if (latest) {
     latest.remove();
   }
@@ -1576,20 +1623,28 @@ function tryPatchLiveJobCard(view) {
     cancelBtn.textContent = state.cancelling ? "Cancelling…" : "Cancel build";
   }
 
-  let logPre = card.querySelector("pre.log");
-  const logText = logs.length ? logs.slice(-40).join("\n") : "";
+  let logPre = card.querySelector("#liveLog") || card.querySelector("pre.log");
+  const logText = formatLiveLogText(logs);
   if (logs.length) {
     if (!logPre) {
       const hint = card.querySelector(".hint");
       logPre = document.createElement("pre");
       logPre.className = "log";
+      logPre.id = "liveLog";
+      logPre.dataset.live = "1";
       if (hint) hint.after(logPre);
       else card.appendChild(logPre);
+      liveLogFollowBottom = true;
     }
-    const stick = nearBottom(logPre);
+    bindLiveLogFollow(logPre);
     if (logPre.textContent !== logText) {
+      // Replacing text resets scrollTop to 0 in every browser — pin back to bottom
+      // for live follow mode (default). That sliding 80-line window otherwise looks
+      // like the console "jumped to the top" on every poll.
       logPre.textContent = logText;
-      if (stick) logPre.scrollTop = logPre.scrollHeight;
+      if (liveLogFollowBottom) pinLiveLogToBottom(logPre);
+    } else if (liveLogFollowBottom && !nearBottom(logPre)) {
+      pinLiveLogToBottom(logPre);
     }
   }
 
@@ -1610,16 +1665,22 @@ function tryPatchLiveJobCard(view) {
   const buildCard = view.querySelector(".build-card");
   if (buildCard) buildCard.classList.toggle("is-dim", !!state.busy);
 
+  // Restore page scroll in case layout mutations nudged it (common on iOS).
+  if (view.scrollTop !== viewScrollTop) view.scrollTop = viewScrollTop;
+
   return true;
 }
 
-function restoreScrollPositions(view, { viewScrollTop, logScrollTop, logStickBottom }) {
+function restoreScrollPositions(view, { viewScrollTop, logStickBottom }) {
   const apply = () => {
     view.scrollTop = viewScrollTop;
-    const logPre = view.querySelector("pre.log");
+    const logPre = view.querySelector("#liveLog") || view.querySelector("pre.log");
     if (!logPre) return;
-    if (logStickBottom) logPre.scrollTop = logPre.scrollHeight;
-    else if (logScrollTop != null) logPre.scrollTop = logScrollTop;
+    bindLiveLogFollow(logPre);
+    if (logStickBottom || liveLogFollowBottom) {
+      logPre.scrollTop = logPre.scrollHeight;
+      liveLogFollowBottom = true;
+    }
   };
   apply();
   // iOS Safari often ignores sync scrollTop right after innerHTML — re-apply twice.
@@ -1638,7 +1699,7 @@ function render(opts = {}) {
   if (!view) return;
   const key = scrollViewKey();
 
-  // Live poll path: patch the job card in place so the console doesn't jump.
+  // Live poll path: patch the job card in place so the console doesn't remount.
   if (allowPatch && key === lastScrollViewKey && tryPatchLiveJobCard(view)) {
     return;
   }
@@ -1652,18 +1713,18 @@ function render(opts = {}) {
 
   const sameKey = key === lastScrollViewKey;
   const viewScrollTop = sameKey ? view.scrollTop : 0;
-  const logEl = view.querySelector("pre.log");
-  const logScrollTop = sameKey && logEl ? logEl.scrollTop : null;
-  const logStickBottom =
-    !sameKey ||
-    !logEl ||
-    nearBottom(logEl) ||
-    (state.activeJob && isLiveJob(state.activeJob));
+  const live = state.activeJob && isLiveJob(state.activeJob);
+  // Live console always opens pinned to the latest line.
+  const logStickBottom = !sameKey || live || liveLogFollowBottom;
 
   view.innerHTML = body;
   lastScrollViewKey = key;
+  liveLogScrollBound = null;
+  if (live) liveLogFollowBottom = true;
   bindViewEvents(view);
-  restoreScrollPositions(view, { viewScrollTop, logScrollTop, logStickBottom });
+  const logPre = view.querySelector("#liveLog");
+  if (logPre) bindLiveLogFollow(logPre);
+  restoreScrollPositions(view, { viewScrollTop, logStickBottom });
 }
 
 function escapeHtml(s) {

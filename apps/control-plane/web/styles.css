@@ -709,6 +709,14 @@ pre.log {
   word-break: break-word;
   border: 1px solid var(--border);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  /* Prevent iOS/Chrome from shifting #view scroll when log text is replaced. */
+  overflow-anchor: none;
+}
+
+.job-latest,
+.job-meta,
+.job-card.is-live {
+  overflow-anchor: none;
 }
 
 code {
