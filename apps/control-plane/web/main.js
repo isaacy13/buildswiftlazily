@@ -29,6 +29,10 @@ const state = {
   jobs: [],
   activeJobId: null,
   activeJob: null,
+  /** Server says a deploy gate / live job exists (for reconnect banner). */
+  gateHeld: false,
+  liveJobId: null,
+  webBuild: "",
   busy: false,
   cancelling: false,
   message: "",
@@ -169,6 +173,7 @@ async function bootstrap() {
   try {
     const health = await api("/api/health");
     state.apiAuthRequired = Boolean(health.apiAuthRequired);
+    state.webBuild = health.webBuild || "";
     state.config = await api("/api/config");
     state.apiAuthRequired = Boolean(
       state.config.apiAuthRequired || state.apiAuthRequired,
@@ -235,14 +240,24 @@ async function resumeActiveJob() {
     state.jobs = jobs;
     liveJobId = data.liveJobId || null;
     gateHeld = Boolean(data.gateHeld);
+    state.gateHeld = gateHeld;
+    state.liveJobId = liveJobId;
     if (data.liveJob && isLiveJob(data.liveJob)) {
       embeddedLive = data.liveJob;
       liveJobId = data.liveJob.id;
+      state.liveJobId = liveJobId;
+    } else if (data.liveJob && data.liveJob.id) {
+      // Gate may still reference a job even if status flipped mid-request.
+      liveJobId = liveJobId || data.liveJob.id;
+      state.liveJobId = liveJobId;
     }
     // If the gate is held but liveJobId was missing, prefer any live row in the list.
     if (!liveJobId) {
       const listedLive = jobs.find((j) => isLiveJob(j));
-      if (listedLive) liveJobId = listedLive.id;
+      if (listedLive) {
+        liveJobId = listedLive.id;
+        state.liveJobId = liveJobId;
+      }
     }
   } catch {
     /* keep going with remembered job if any */
@@ -281,6 +296,8 @@ async function resumeActiveJob() {
       resumePoll: true,
       message: "Reattached to build in progress…",
     });
+    state.gateHeld = true;
+    state.liveJobId = live.id;
     await pollJob(live.id);
     return true;
   }
@@ -294,6 +311,7 @@ async function resumeActiveJob() {
           resumePoll: true,
           message: "Reattached to build in progress…",
         });
+        state.liveJobId = again.id;
         await pollJob(again.id);
         return true;
       }
@@ -317,6 +335,29 @@ async function resumeActiveJob() {
     }
   }
   return false;
+}
+
+async function reconnectLiveBuild() {
+  state.error = "";
+  state.message = "Looking for live build…";
+  render();
+  try {
+    const ok = await resumeActiveJob();
+    if (ok) {
+      state.message = "Reattached to build in progress…";
+      state.error = "";
+    } else if (state.gateHeld || state.liveJobId) {
+      state.error =
+        "Mac still reports a deploy in progress, but no live job was returned. Restart ./scripts/start.sh on the Mac (it now rebuilds + restarts), then refresh.";
+      state.message = "";
+    } else {
+      state.message = "No live build on the Mac right now.";
+    }
+  } catch (e) {
+    state.error = String(e.message || e);
+    state.message = "";
+  }
+  render();
 }
 
 async function selectRepo(fullName, preferredRef, meta) {
@@ -501,6 +542,21 @@ async function deploy() {
     render();
     return;
   }
+
+  // Before starting a new deploy, try to reattach — refresh often drops the card
+  // while the Mac gate is still held.
+  try {
+    const resumed = await resumeActiveJob();
+    if (resumed && state.activeJob && isLiveJob(state.activeJob)) {
+      state.message = "Reattached to build in progress…";
+      state.error = "";
+      render();
+      return;
+    }
+  } catch {
+    /* continue to POST */
+  }
+
   state.busy = true;
   state.error = "";
   state.message = "";
@@ -577,7 +633,7 @@ async function deploy() {
         return;
       }
       state.error =
-        "A deploy is already in progress, but the live job could not be loaded. Pull latest buildswiftlazily, restart ./scripts/start.sh on the Mac, then refresh this page.";
+        "A deploy is already in progress, but the live job could not be loaded. On the Mac run ./scripts/start.sh again (it now rebuilds + restarts), then hard-refresh this page.";
       state.message = "";
       if (!(state.activeJob && isLiveJob(state.activeJob))) {
         state.busy = false;
@@ -938,8 +994,22 @@ function renderProjects() {
       state.activeJob.status === "failed" ||
       state.activeJob.status === "cancelled");
 
+  const needsReconnect =
+    !jobFirst &&
+    (state.gateHeld || state.liveJobId) &&
+    !(state.activeJob && isLiveJob(state.activeJob));
+
   return `
     ${renderSetupBanner()}
+    ${
+      needsReconnect
+        ? `<div class="banner warn">
+      <strong>A build is running on the Mac</strong>
+      <div class="muted">This page lost the live card after refresh. Reconnect to watch logs.</div>
+      <button type="button" class="secondary" id="reconnectBuildBtn" style="margin-top:0.65rem">Reconnect to build</button>
+    </div>`
+        : ""
+    }
     ${jobFirst ? renderJobCard() : ""}
     <div class="card build-card ${state.busy ? "is-dim" : ""}">
       <div class="step">
@@ -1188,7 +1258,12 @@ function renderStatus() {
   const needToken = state.apiAuthRequired && !state.apiToken;
   const health = state.config
     ? `<div class="kv"><span>Tailscale</span><code>${escapeHtml(state.config.tsHost || "unset")}</code></div>
-       <div class="kv"><span>Engine</span><code>${escapeHtml(state.config.deployEngine || "local")}</code></div>`
+       <div class="kv"><span>Engine</span><code>${escapeHtml(state.config.deployEngine || "local")}</code></div>
+       ${
+         state.webBuild
+           ? `<div class="kv"><span>PWA build</span><code>${escapeHtml(state.webBuild)}</code></div>`
+           : ""
+       }`
     : "";
   const devices = state.devices
     ? (() => {
@@ -1384,6 +1459,9 @@ function bindViewEvents(view) {
     engineSelect.addEventListener("change", (e) => (state.engine = e.target.value));
   const deployBtn = view.querySelector("#deployBtn");
   if (deployBtn) deployBtn.addEventListener("click", deploy);
+  const reconnectBuildBtn = view.querySelector("#reconnectBuildBtn");
+  if (reconnectBuildBtn)
+    reconnectBuildBtn.addEventListener("click", reconnectLiveBuild);
   const cancelJobBtn = view.querySelector("#cancelJobBtn");
   if (cancelJobBtn) cancelJobBtn.addEventListener("click", cancelActiveJob);
   view.querySelectorAll(".pick-ios").forEach((btn) =>

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { Env } from "./config.js";
 
@@ -63,6 +64,7 @@ export function listOtaArtifacts(env: Env) {
 }
 
 export function healthPayload(env: Env) {
+  const webBuild = detectWebBuild();
   return {
     ok: true,
     service: "buildswiftlazily",
@@ -72,6 +74,23 @@ export function healthPayload(env: Env) {
     cursorConfigured: Boolean(env.cursorApiKey),
     // Do not expose absolute local paths on the unauthenticated health endpoint.
     artifactRootConfigured: Boolean(env.artifactRoot),
+    /** Hashed PWA bundle id from dist/index.html — use to confirm the phone got a fresh build. */
+    webBuild,
     time: new Date().toISOString(),
   };
+}
+
+function detectWebBuild(): string | null {
+  try {
+    const indexPath = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../web/dist/index.html",
+    );
+    if (!fs.existsSync(indexPath)) return null;
+    const html = fs.readFileSync(indexPath, "utf8");
+    const m = html.match(/\/assets\/(index-[A-Za-z0-9_-]+\.js)/);
+    return m?.[1] || null;
+  } catch {
+    return null;
+  }
 }
