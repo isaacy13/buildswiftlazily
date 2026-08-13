@@ -127,15 +127,16 @@ fi
 ARCHIVE_PATH="$OUT_DIR/App.xcarchive"
 EXPORT_DIR="$OUT_DIR/export"
 APP_DIR="$OUT_DIR/app"
-rm -rf "$EXPORT_DIR" "$APP_DIR"
-mkdir -p "$EXPORT_DIR" "$APP_DIR"
+DERIVED_DATA="$OUT_DIR/DerivedData"
+rm -rf "$EXPORT_DIR" "$APP_DIR" "$DERIVED_DATA"
+mkdir -p "$EXPORT_DIR" "$APP_DIR" "$DERIVED_DATA"
 
 XCODE_DEST="generic/platform=iOS"
 if [[ "$PLATFORM" == "watchos" ]]; then
   XCODE_DEST="generic/platform=watchOS"
 fi
 
-XCODE_ARGS=( -scheme "$SCHEME" -configuration "$CONFIGURATION" -destination "$XCODE_DEST" -archivePath "$ARCHIVE_PATH" )
+XCODE_ARGS=( -scheme "$SCHEME" -configuration "$CONFIGURATION" -destination "$XCODE_DEST" -archivePath "$ARCHIVE_PATH" -derivedDataPath "$DERIVED_DATA" )
 if [[ -n "$WORKSPACE" ]]; then
   XCODE_ARGS=( -workspace "$WORKSPACE" "${XCODE_ARGS[@]}" )
 else
@@ -159,12 +160,49 @@ if [[ "$DRY_RUN" != "1" ]]; then
   # Defense in depth if unlock was a no-op path
   unset BSL_KEYCHAIN_PASSWORD || true
 fi
-ARCHIVE_CMD=( xcodebuild "${XCODE_ARGS[@]}" -allowProvisioningUpdates clean archive )
+
+# Reorder Embed Foundation/App Extensions before Thin Binary / other scripts when needed.
+# (Fresh tarball checkouts inherit whatever phase order the app repo committed.)
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "DRY_RUN: would fix Embed Foundation Extensions build phase order under $WORK"
+else
+  bsl_fix_embed_extension_phases "$WORK" || true
+fi
+
+ARCHIVE_CMD=(
+  xcodebuild "${XCODE_ARGS[@]}"
+  -allowProvisioningUpdates
+  clean archive
+  # Per-job DerivedData above already isolates state; disable script sandbox so
+  # CocoaPods / Flutter / extension embed scripts can codesign + rsync.
+  ENABLE_USER_SCRIPT_SANDBOXING=NO
+)
 if [[ -n "$TEAM_ID" ]]; then
   ARCHIVE_CMD+=( DEVELOPMENT_TEAM="$TEAM_ID" )
 fi
 echo "Running: ${ARCHIVE_CMD[*]}"
+set +e
 run "${ARCHIVE_CMD[@]}"
+ARCHIVE_STATUS=$?
+set -e
+if [[ "$ARCHIVE_STATUS" -ne 0 ]]; then
+  echo "Archive failed (exit=$ARCHIVE_STATUS). Scanning for Embed Foundation Extensions hints…" >&2
+  # Surface the failing Run Script body when Xcode left it under DerivedData.
+  if [[ -d "$DERIVED_DATA" ]]; then
+    while IFS= read -r script; do
+      echo "---- failed script: $script ----" >&2
+      # shellcheck disable=SC2002
+      tail -n 80 "$script" >&2 || true
+    done < <(find "$DERIVED_DATA" -type f -name 'Script-*.sh' 2>/dev/null | head -5)
+  fi
+  if grep -Rql "Embed Foundation Extensions\|Embed App Extensions" "$DERIVED_DATA" 2>/dev/null; then
+    echo "Hint: Embed Foundation/App Extensions failed. Common fixes:" >&2
+    echo "  1) In Xcode → Target → Build Phases, drag Embed Foundation Extensions above Thin Binary / Run Script phases." >&2
+    echo "  2) Ensure every app extension target signs with the same Team (automatic) and archives with the app scheme." >&2
+    echo "  3) Run ./scripts/prepare-keychain.sh if codesign is blocked (errSecInteractionNotAllowed)." >&2
+  fi
+  exit "$ARCHIVE_STATUS"
+fi
 echo "Archive step finished."
 
 # Locate .app inside archive for direct install

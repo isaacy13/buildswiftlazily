@@ -360,7 +360,7 @@ async function pollJob(jobId) {
     stopPoll();
     state.busy = false;
   }
-  render();
+  render({ allowPatch: true });
 }
 
 async function cancelActiveJob() {
@@ -1418,16 +1418,13 @@ function scrollViewKey() {
   return state.tab;
 }
 
-function render() {
-  renderShellOnce();
+function nearBottom(el, px = 48) {
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= px;
+}
 
-  const body =
-    state.tab === "projects"
-      ? renderProjects()
-      : state.tab === "cursor"
-        ? renderCursor()
-        : renderStatus();
-
+/** Update shell chrome (pill + tabs) without touching #view. */
+function updateShellChrome() {
   const statusLabel = state.busy
     ? "building…"
     : state.openingAgentId || state.agentsLoading
@@ -1454,15 +1451,153 @@ function render() {
     btn.classList.toggle("active", active);
     btn.setAttribute("aria-current", active ? "page" : "false");
   });
+}
+
+/**
+ * In-place patch for live job polls so #view / log console don't jump to top.
+ * Returns true when the DOM was patched without a full innerHTML swap.
+ */
+function tryPatchLiveJobCard(view) {
+  if (state.tab !== "projects") return false;
+  const job = state.activeJob;
+  if (!job || !isLiveJob(job)) return false;
+  const card = view.querySelector(".job-card.is-live");
+  if (!card) return false;
+
+  const badge = card.querySelector(".badge");
+  if (badge) {
+    badge.textContent = job.status;
+    badge.className = `badge run`;
+  }
+
+  const meta = card.querySelector(".job-meta");
+  if (meta) {
+    const startedMs = job.createdAt ? Date.parse(job.createdAt) : NaN;
+    let elapsed = "";
+    if (!Number.isNaN(startedMs)) {
+      const sec = Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
+      if (sec < 60) elapsed = `${sec}s`;
+      else {
+        const min = Math.floor(sec / 60);
+        elapsed =
+          min < 60 ? `${min}m ${sec % 60}s` : `${Math.floor(min / 60)}h ${min % 60}m`;
+      }
+    }
+    meta.textContent = `${job.scheme || job.repository} · ${job.ref} · ${job.deployMode}${
+      elapsed ? ` · ${elapsed}` : ""
+    }`;
+  }
+
+  const logs = job.logs || [];
+  const latestLog = logs.length ? logs[logs.length - 1] : "";
+  let latest = card.querySelector(".job-latest");
+  if (latestLog) {
+    if (!latest) {
+      latest = document.createElement("p");
+      latest.className = "job-latest";
+      const cancelBtn = card.querySelector("#cancelJobBtn");
+      if (cancelBtn) card.insertBefore(latest, cancelBtn);
+      else card.appendChild(latest);
+    }
+    latest.innerHTML = `<span class="pulse" aria-hidden="true"></span>${escapeHtml(latestLog)}`;
+  } else if (latest) {
+    latest.remove();
+  }
+
+  const cancelBtn = card.querySelector("#cancelJobBtn");
+  if (cancelBtn) {
+    cancelBtn.disabled = !!state.cancelling;
+    cancelBtn.textContent = state.cancelling ? "Cancelling…" : "Cancel build";
+  }
+
+  let logPre = card.querySelector("pre.log");
+  const logText = logs.length ? logs.slice(-40).join("\n") : "";
+  if (logs.length) {
+    if (!logPre) {
+      const hint = card.querySelector(".hint");
+      logPre = document.createElement("pre");
+      logPre.className = "log";
+      if (hint) hint.after(logPre);
+      else card.appendChild(logPre);
+    }
+    const stick = nearBottom(logPre);
+    if (logPre.textContent !== logText) {
+      logPre.textContent = logText;
+      if (stick) logPre.scrollTop = logPre.scrollHeight;
+    }
+  }
+
+  const waiting = card.querySelector(".muted");
+  if (waiting && /Waiting for first log/.test(waiting.textContent || "")) {
+    if (logs.length) waiting.remove();
+  }
+
+  const deployBtn = view.querySelector("#deployBtn");
+  if (deployBtn) {
+    deployBtn.disabled = state.busy || !state.scheme || !state.selectedRepo;
+    deployBtn.textContent = state.busy
+      ? "Building…"
+      : state.deployMode === "testflight"
+        ? "Build & upload"
+        : "Build & install";
+  }
+  const buildCard = view.querySelector(".build-card");
+  if (buildCard) buildCard.classList.toggle("is-dim", !!state.busy);
+
+  return true;
+}
+
+function restoreScrollPositions(view, { viewScrollTop, logScrollTop, logStickBottom }) {
+  const apply = () => {
+    view.scrollTop = viewScrollTop;
+    const logPre = view.querySelector("pre.log");
+    if (!logPre) return;
+    if (logStickBottom) logPre.scrollTop = logPre.scrollHeight;
+    else if (logScrollTop != null) logPre.scrollTop = logScrollTop;
+  };
+  apply();
+  // iOS Safari often ignores sync scrollTop right after innerHTML — re-apply twice.
+  requestAnimationFrame(() => {
+    apply();
+    requestAnimationFrame(apply);
+  });
+}
+
+function render(opts = {}) {
+  const allowPatch = !!opts.allowPatch;
+  renderShellOnce();
+  updateShellChrome();
 
   const view = app.querySelector("#view");
   if (!view) return;
   const key = scrollViewKey();
-  const scrollTop = key === lastScrollViewKey ? view.scrollTop : 0;
+
+  // Live poll path: patch the job card in place so the console doesn't jump.
+  if (allowPatch && key === lastScrollViewKey && tryPatchLiveJobCard(view)) {
+    return;
+  }
+
+  const body =
+    state.tab === "projects"
+      ? renderProjects()
+      : state.tab === "cursor"
+        ? renderCursor()
+        : renderStatus();
+
+  const sameKey = key === lastScrollViewKey;
+  const viewScrollTop = sameKey ? view.scrollTop : 0;
+  const logEl = view.querySelector("pre.log");
+  const logScrollTop = sameKey && logEl ? logEl.scrollTop : null;
+  const logStickBottom =
+    !sameKey ||
+    !logEl ||
+    nearBottom(logEl) ||
+    (state.activeJob && isLiveJob(state.activeJob));
+
   view.innerHTML = body;
-  view.scrollTop = scrollTop;
   lastScrollViewKey = key;
   bindViewEvents(view);
+  restoreScrollPositions(view, { viewScrollTop, logScrollTop, logStickBottom });
 }
 
 function escapeHtml(s) {

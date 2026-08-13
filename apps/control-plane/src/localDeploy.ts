@@ -744,6 +744,12 @@ export async function runLocalDeploy(
     ) {
       error = `${raw} — Keychain blocked unattended codesign. On the Mac run ./scripts/prepare-keychain.sh (optional: set BSL_KEYCHAIN_PASSWORD in .env). You cannot approve the Keychain dialog from the iPhone.`;
     } else if (
+      /Embed Foundation Extensions|Embed App Extensions|PhaseScriptExecution.*Embed/i.test(
+        blob,
+      )
+    ) {
+      error = `${raw} — Embed Foundation/App Extensions failed during archive. build-ios.sh now reorders that phase and disables user-script sandboxing; re-run once. If it still fails: in Xcode open the app scheme → Build Phases → drag Embed Foundation Extensions above Thin Binary / other Run Scripts, ensure every appex target uses the same Team with automatic signing, then commit the pbxproj. Also run ./scripts/prepare-keychain.sh if codesign is blocked.`;
+    } else if (
       /Unable to authenticate|AuthKey_|BSL_ASC_KEY|ASC API auth|TESTFLIGHT|altool|No suitable application records|duplicate|CFBundleVersion/i.test(
         blob,
       )
