@@ -22,6 +22,12 @@ import {
 } from "../src/ota.js";
 import { apiTokenOk, DeployGate, publicError, redact } from "../src/security.js";
 import { JobStore } from "../src/jobs.js";
+import {
+  filterAndRank,
+  looksLikeRef,
+  matchesQuery,
+  rankMatch,
+} from "../src/search.js";
 
 test("detectXcodeProjects finds workspace, skips Pods, hints watchOS", () => {
   const paths = [
@@ -225,6 +231,50 @@ test("DeployGate recovers jobId from findLive when bind was missed", () => {
     assert.match(blocked.reason, /already in progress/i);
   }
   assert.equal(gate.getInflightJobId(), "recovered-job");
+});
+
+test("matchesQuery finds substring, tokens, and compact hyphen-insensitive names", () => {
+  const branch = "cursor/search-functionality-4b3d";
+  assert.equal(matchesQuery(branch, ""), true);
+  assert.equal(matchesQuery(branch, "search"), true);
+  assert.equal(matchesQuery(branch, "SEARCH FUNC"), true);
+  assert.equal(matchesQuery(branch, "searchfunctionality"), true);
+  assert.equal(matchesQuery(branch, "cursor/search"), true);
+  assert.equal(matchesQuery(branch, "nope"), false);
+  assert.equal(matchesQuery("GuideAI", "guide"), true);
+});
+
+test("rankMatch prefers exact then prefix then path-segment hits", () => {
+  assert.ok(rankMatch("main", "main") < rankMatch("mainline", "main"));
+  assert.ok(rankMatch("cursor/search-ui", "search") < rankMatch("research-notes", "search"));
+});
+
+test("filterAndRank orders and limits branch hits", () => {
+  const branches = [
+    { name: "main" },
+    { name: "cursor/search-functionality-4b3d" },
+    { name: "cursor/other-a490" },
+    { name: "research-notes" },
+  ];
+  const { matches, total } = filterAndRank(
+    branches,
+    "search",
+    (b) => b.name,
+    10,
+  );
+  assert.equal(total, 2);
+  assert.equal(matches[0].name, "cursor/search-functionality-4b3d");
+  assert.ok(matches.some((b) => b.name === "research-notes"));
+  assert.ok(!matches.some((b) => b.name === "main"));
+  assert.ok(!matches.some((b) => b.name === "cursor/other-a490"));
+});
+
+test("looksLikeRef accepts git-safe names and rejects junk", () => {
+  assert.equal(looksLikeRef("cursor/search-functionality-4b3d"), true);
+  assert.equal(looksLikeRef("feature/foo"), true);
+  assert.equal(looksLikeRef("foo/../bar"), false);
+  assert.equal(looksLikeRef("main;rm"), false);
+  assert.equal(looksLikeRef(""), false);
 });
 
 test("JobStore.findLive returns newest queued/running job", () => {

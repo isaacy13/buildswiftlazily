@@ -64,6 +64,25 @@ test("GET /api/health and /api/setup", async () => {
   assert.ok(s.items.some((i: { id: string }) => i.id === "keychain"));
 });
 
+test("GET /api/repos/:owner/:name/branches supports q filter", async () => {
+  const { app } = createApp({ env: testEnv(), repoConfig });
+  const all = await app.request("/api/repos/isaacy13/GuideAI/branches");
+  assert.equal(all.status, 200);
+  const allData = await all.json();
+  assert.ok(allData.branches.some((b: { name: string }) => b.name === "main"));
+  assert.equal(allData.matched, 1);
+
+  const hit = await app.request("/api/repos/isaacy13/GuideAI/branches?q=mai");
+  const hitData = await hit.json();
+  assert.ok(hitData.branches.some((b: { name: string }) => b.name === "main"));
+  assert.equal(hitData.matched, 1);
+
+  const miss = await app.request("/api/repos/isaacy13/GuideAI/branches?q=nope");
+  const missData = await miss.json();
+  assert.equal(missData.branches.length, 0);
+  assert.equal(missData.matched, 0);
+});
+
 test("GET /api/repos without token returns pinned GuideAI", async () => {
   const { app } = createApp({ env: testEnv(), repoConfig });
   const res = await app.request("/api/repos");

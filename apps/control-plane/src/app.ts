@@ -41,6 +41,7 @@ import {
 } from "./security.js";
 import { JobStore } from "./jobs.js";
 import { requestJobCancel, runLocalDeploy } from "./localDeploy.js";
+import { filterAndRank } from "./search.js";
 import { buildSetupChecklist } from "./setup.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -190,9 +191,13 @@ export function createApp(deps: AppDeps) {
 
   app.get("/api/repos/:owner/:name/branches", async (c) => {
     try {
+      const q = c.req.query("q") || "";
       if (!env.githubToken) {
+        const branches = [{ name: "main", protected: false }];
+        const { matches, total } = filterAndRank(branches, q, (b) => b.name);
         return c.json({
-          branches: [{ name: "main", protected: false }],
+          branches: matches,
+          matched: total,
           warning: "No GitHub token — defaulting to main",
         });
       }
@@ -200,7 +205,8 @@ export function createApp(deps: AppDeps) {
         `${c.req.param("owner")}/${c.req.param("name")}`,
       );
       const branches = await listBranches(env, repository);
-      return c.json({ branches });
+      const { matches, total } = filterAndRank(branches, q, (b) => b.name);
+      return c.json({ branches: matches, matched: total });
     } catch (e) {
       return c.json({ error: publicError(e) }, 400);
     }

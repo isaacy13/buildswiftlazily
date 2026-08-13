@@ -522,6 +522,109 @@ a.secondary.block {
   width: 100%;
 }
 
+/* ——— Searchable app / branch pickers ——— */
+.combo-anchor {
+  position: relative;
+}
+
+.combobox {
+  position: relative;
+}
+
+.combobox.is-open {
+  z-index: 6;
+}
+
+.combobox.is-open .combo-anchor input {
+  border-color: rgba(10, 132, 255, 0.65);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.combo-list {
+  position: absolute;
+  z-index: 35;
+  left: 0;
+  right: 0;
+  top: calc(100% + 0.3rem);
+  max-height: min(16.5rem, 46vh);
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  box-shadow: var(--shadow-soft);
+}
+
+.combo-count,
+.combo-empty {
+  margin: 0;
+  padding: 0.55rem 0.8rem 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.combo-empty {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  padding-bottom: 0.7rem;
+}
+
+.combo-option {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.45rem;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  padding: 0.7rem 0.8rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.combo-option:first-of-type,
+.combo-list > .combo-option:first-child {
+  border-top: 0;
+}
+
+.combo-option .title {
+  font-weight: 600;
+  font-size: 0.92rem;
+  letter-spacing: -0.015em;
+  word-break: break-all;
+}
+
+.combo-option .muted {
+  flex: 1 1 100%;
+  font-size: 0.75rem;
+}
+
+.combo-option.is-active,
+.combo-option:hover {
+  background: var(--accent-soft);
+}
+
+.combo-option.is-current .title {
+  color: #6eb6ff;
+}
+
+.combo-custom {
+  color: var(--text-secondary);
+}
+
+.combo-hint {
+  margin-top: 0.35rem;
+}
+
 .check-row {
   display: flex;
   align-items: center;
