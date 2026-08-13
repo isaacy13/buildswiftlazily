@@ -205,6 +205,12 @@ if [[ "$ARCHIVE_STATUS" -ne 0 ]]; then
 fi
 echo "Archive step finished."
 
+# Replace bundle-like symlinks in the archive so exportArchive ships real
+# .app/.appex/.framework copies. Aliases here become ITMS-90018 after upload.
+if [[ "$DRY_RUN" != "1" && -d "$ARCHIVE_PATH/Products/Applications" ]]; then
+  bsl_materialize_bundle_symlinks "$ARCHIVE_PATH/Products/Applications"
+fi
+
 # Locate .app inside archive for direct install
 if [[ "$MODE" == "direct" || "$MODE" == "both" ]]; then
   if [[ "$DRY_RUN" == "1" ]]; then
@@ -268,6 +274,7 @@ EOF
   fi
   cp "$IPA" "$OUT_DIR/App.ipa"
   echo "IPA_PATH=$OUT_DIR/App.ipa" | tee "$OUT_DIR/ipa_path.txt"
+  bsl_assert_ipa_payload "$OUT_DIR/App.ipa"
 
   if command -v unzip >/dev/null 2>&1; then
     TMP="$(mktemp -d)"

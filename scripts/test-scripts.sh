@@ -26,6 +26,63 @@ out3=$(BSL_DRY_RUN=1 "$ROOT/scripts/upload-testflight.sh" --ipa "$OUT/App.ipa" -
 echo "$out3" | grep -q TESTFLIGHT_UPLOAD
 echo "$out3" | grep -q 'upload-package'
 
+# Mini IPA (real zip + Info.plist) so upload-package gets required bundle metadata
+python3 - "$TMP/mini.ipa" <<'PY'
+import plistlib, sys, zipfile
+from pathlib import Path
+ipa = Path(sys.argv[1])
+info = {
+    "CFBundleIdentifier": "com.demo.app",
+    "CFBundleVersion": "42",
+    "CFBundleShortVersionString": "1.2.3",
+}
+buf = plistlib.dumps(info)
+with zipfile.ZipFile(ipa, "w") as z:
+    z.writestr("Payload/Demo.app/Info.plist", buf)
+PY
+out3b=$(BSL_DRY_RUN=1 "$ROOT/scripts/upload-testflight.sh" --ipa "$TMP/mini.ipa" --dry-run)
+echo "$out3b" | grep -q -- '--bundle-id com.demo.app'
+echo "$out3b" | grep -q -- '--bundle-version 42'
+echo "$out3b" | grep -q -- '--bundle-short-version-string 1.2.3'
+
+# ITMS-90018 helpers: materialize archive aliases; reject non-zip / symlink bundles
+# shellcheck source=lib.sh
+source "$ROOT/scripts/lib.sh"
+mkdir -p "$TMP/arch/Demo.app" "$TMP/real.appex"
+echo plugin > "$TMP/real.appex/Info.plist"
+ln -s "$TMP/real.appex" "$TMP/arch/Demo.app/PlugIn.appex"
+fix_sy=$(bsl_materialize_bundle_symlinks "$TMP/arch")
+echo "$fix_sy" | grep -q 'Materialized'
+test -d "$TMP/arch/Demo.app/PlugIn.appex"
+test ! -L "$TMP/arch/Demo.app/PlugIn.appex"
+grep -q plugin "$TMP/arch/Demo.app/PlugIn.appex/Info.plist"
+ident=$(bsl_ipa_bundle_identity "$TMP/mini.ipa")
+echo "$ident" | grep -q $'com.demo.app\t42\t1.2.3'
+aid=$(printf '%s\n' '{"applications":[{"bundleID":"com.demo.app","appleId":1234567890}]}' | bsl_apple_id_from_list_apps com.demo.app)
+test "$aid" = "1234567890"
+if bsl_assert_ipa_payload "$OUT/App.ipa" >/dev/null 2>&1; then
+  echo "expected non-zip IPA to fail payload check" >&2
+  exit 1
+fi
+bsl_assert_ipa_payload "$TMP/mini.ipa" >/dev/null
+
+python3 - "$TMP/symlink.ipa" <<'PY'
+import plistlib, sys, zipfile
+from pathlib import Path
+ipa = Path(sys.argv[1])
+info = plistlib.dumps({"CFBundleIdentifier": "com.demo.app"})
+with zipfile.ZipFile(ipa, "w") as z:
+    z.writestr("Payload/Demo.app/Info.plist", info)
+    zi = zipfile.ZipInfo("Payload/Demo.app/Bad.framework")
+    zi.create_system = 3
+    zi.external_attr = 0o120777 << 16
+    z.writestr(zi, "/tmp/missing.framework")
+PY
+if bsl_assert_ipa_payload "$TMP/symlink.ipa" >/dev/null 2>&1; then
+  echo "expected symlink-bundle IPA to fail" >&2
+  exit 1
+fi
+
 out4=$(BSL_DRY_RUN=1 "$ROOT/scripts/serve-ota.sh" --ipa "$OUT/App.ipa" --artifact-id scripttest1 --title Demo --bundle-id com.demo --ts-host x.ts.net --dry-run)
 echo "$out4" | grep -q INSTALL_URL
 

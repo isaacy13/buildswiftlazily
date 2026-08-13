@@ -685,14 +685,27 @@ export async function runLocalDeploy(
       if (!fs.existsSync(ipa)) throw new Error("IPA missing after build");
       const ipaSize = fs.existsSync(ipa) ? fs.statSync(ipa).size : 0;
       let bver = "";
+      let bshort = "";
+      let bid = "";
+      if (fs.existsSync(path.join(outDir, "bundle_id.txt"))) {
+        bid = fs.readFileSync(path.join(outDir, "bundle_id.txt"), "utf8").trim();
+      }
       if (fs.existsSync(path.join(outDir, "bundle_version.txt"))) {
         bver = fs.readFileSync(path.join(outDir, "bundle_version.txt"), "utf8").trim();
+      }
+      if (fs.existsSync(path.join(outDir, "bundle_short_version.txt"))) {
+        bshort = fs
+          .readFileSync(path.join(outDir, "bundle_short_version.txt"), "utf8")
+          .trim();
       }
       if (bver) phase(`CFBundleVersion=${bver} (must be unique per upload)`);
       phase(
         `Phase: TestFlight upload via altool (${Math.round(ipaSize / (1024 * 1024))} MiB IPA). Do not Ctrl+C — quiet periods are normal.`,
       );
       const tfArgs = ["--ipa", ipa, "--platform", platform];
+      if (bid) tfArgs.push("--bundle-id", bid);
+      if (bver) tfArgs.push("--bundle-version", bver);
+      if (bshort) tfArgs.push("--bundle-short-version", bshort);
       if (dry) tfArgs.push("--dry-run");
       const tf = await runScript(
         jobId,
@@ -750,7 +763,7 @@ export async function runLocalDeploy(
     ) {
       error = `${raw} — Embed Foundation/App Extensions failed during archive. build-ios.sh now reorders that phase and disables user-script sandboxing; re-run once. If it still fails: in Xcode open the app scheme → Build Phases → drag Embed Foundation Extensions above Thin Binary / other Run Scripts, ensure every appex target uses the same Team with automatic signing, then commit the pbxproj. Also run ./scripts/prepare-keychain.sh if codesign is blocked.`;
     } else if (
-      /Unable to authenticate|AuthKey_|BSL_ASC_KEY|ASC API auth|TESTFLIGHT|altool|No suitable application records|duplicate|CFBundleVersion/i.test(
+      /Unable to authenticate|AuthKey_|BSL_ASC_KEY|ASC API auth|TESTFLIGHT|altool|No suitable application records|duplicate|CFBundleVersion|ITMS-90018|extension must be/i.test(
         blob,
       )
     ) {
