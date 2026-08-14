@@ -252,6 +252,7 @@ launchctl load ~/Library/LaunchAgents/com.buildswiftlazily.control.plist
 | altool auth / missing AuthKey | `AuthKey_<BSL_ASC_KEY_ID>.p8` under `~/.appstoreconnect/private_keys/`; key needs App Manager+ |
 | Duplicate build rejected | Bump CFBundleVersion, rebuild, upload again |
 | ASC email **ITMS-90018** (file extension must be .zip) | Rebuild with this tooling (archive aliases are copied before export) and bump **CFBundleVersion**. `altool --upload-package` now sends bundle id/version. Optional: set `BSL_ASC_APPLE_ID`. |
+| `Dangling bundle symlink` / Live Activity `.appex` after **ARCHIVE SUCCEEDED** | Xcode left `PlugIns/*.appex` as an alias to `UninstalledProducts`. The build copies that real extension from the xcarchive or DerivedData before export. If it still fails, the extension is not in the archived scheme (or was cleaned). |
 
 ## Next
 

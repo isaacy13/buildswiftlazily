@@ -328,6 +328,8 @@ const KEYCHAIN_RE =
   /errSecInteractionNotAllowed|-25308|User interaction is not allowed|CSSMERR_DL_INVALID_ACCESS_CREDENTIALS|codesign.*keychain/i;
 const EMBED_RE =
   /Hint: Embed Foundation\/App Extensions failed|error:.*Embed (?:Foundation|App|ExtensionKit) Extensions|PhaseScriptExecution.*Embed (?:Foundation|App) Extensions/i;
+const DANGLING_APPEX_RE =
+  /Dangling bundle symlink|Could not find a real \.appex/i;
 const ASC_RE =
   /Unable to authenticate|No suitable application records|ITMS-\d+|already been uploaded|redundant binary|invalid API key|altool:.*?failed|TESTFLIGHT_UPLOAD=fail|AuthKey_.*not found/i;
 
@@ -350,6 +352,9 @@ export function explainDeployFailure(raw: string, blob: string): string {
   }
 
   if (script === "build-ios.sh") {
+    if (DANGLING_APPEX_RE.test(blob)) {
+      return `${raw} — Archive left a PlugIns/.appex alias (Live Activity/widget/watch) that could not be copied from UninstalledProducts. Confirm the extension is in the app scheme; this tooling copies archive aliases before export.${last}`;
+    }
     if (EMBED_RE.test(blob)) {
       return `${raw} — Archive failed while embedding app/watch extensions. Embed Foundation Extensions is moved after Resources and user-script sandboxing is disabled on this checkout. If it still fails: every .appex target must use the same Team (automatic signing); run ./scripts/prepare-keychain.sh if codesign is blocked.${last}`;
     }

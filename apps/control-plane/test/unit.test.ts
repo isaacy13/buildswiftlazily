@@ -342,6 +342,16 @@ test("explainDeployFailure still explains real altool failures", () => {
   assert.match(msg, /TestFlight\/ASC upload issue/);
 });
 
+test("explainDeployFailure explains dangling PlugIns appex aliases", () => {
+  const raw = "build-ios.sh exited 2 after 7m 58s";
+  const blob = `${raw}\n** ARCHIVE SUCCEEDED **\nerror: Dangling bundle symlink (ITMS-90018): GuideAI.app/PlugIns/GuideAILiveActivityExtension.appex -> ../../IntermediateBuildFilesPath/UninstalledProducts/iphoneos/GuideAILiveActivityExtension.appex`;
+  const msg = explainDeployFailure(raw, blob);
+  assert.match(msg, /PlugIns\/\.appex alias/);
+  assert.match(msg, /UninstalledProducts/);
+  assert.match(msg, /Dangling bundle symlink/);
+  assert.doesNotMatch(msg, /TestFlight\/ASC/);
+});
+
 test("explainDeployFailure explains embed-phase archive failures", () => {
   const raw = "build-ios.sh exited 65 after 9m";
   const blob = `${raw}\nHint: Embed Foundation/App Extensions failed. Common fixes:`;

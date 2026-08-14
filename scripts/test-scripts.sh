@@ -56,6 +56,37 @@ echo "$fix_sy" | grep -q 'Materialized'
 test -d "$TMP/arch/Demo.app/PlugIn.appex"
 test ! -L "$TMP/arch/Demo.app/PlugIn.appex"
 grep -q plugin "$TMP/arch/Demo.app/PlugIn.appex/Info.plist"
+
+# Xcode writes PlugIns/*.appex relative to Products/Applications (two levels too shallow).
+mkdir -p "$TMP/xcarch/Products/Applications/Demo.app/PlugIns"
+mkdir -p "$TMP/xcarch/IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Live.appex"
+echo widget > "$TMP/xcarch/IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Live.appex/Info.plist"
+ln -s "../../IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Live.appex" \
+  "$TMP/xcarch/Products/Applications/Demo.app/PlugIns/Live.appex"
+fix_dangle=$(bsl_materialize_bundle_symlinks "$TMP/xcarch/Products/Applications" "$TMP/xcarch")
+echo "$fix_dangle" | grep -q 'Materialized'
+test -d "$TMP/xcarch/Products/Applications/Demo.app/PlugIns/Live.appex"
+test ! -L "$TMP/xcarch/Products/Applications/Demo.app/PlugIns/Live.appex"
+grep -q widget "$TMP/xcarch/Products/Applications/Demo.app/PlugIns/Live.appex/Info.plist"
+
+# Same alias, real .appex only in DerivedData ArchiveIntermediates.
+mkdir -p "$TMP/xcarch2/Products/Applications/Demo.app/PlugIns"
+mkdir -p "$TMP/dd/Build/Intermediates.noindex/ArchiveIntermediates/Demo/IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Widget.appex"
+echo ddwidget > "$TMP/dd/Build/Intermediates.noindex/ArchiveIntermediates/Demo/IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Widget.appex/Info.plist"
+ln -s "../../IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Widget.appex" \
+  "$TMP/xcarch2/Products/Applications/Demo.app/PlugIns/Widget.appex"
+fix_dd=$(bsl_materialize_bundle_symlinks "$TMP/xcarch2/Products/Applications" "$TMP/xcarch2" "$TMP/dd")
+echo "$fix_dd" | grep -q 'Materialized'
+test ! -L "$TMP/xcarch2/Products/Applications/Demo.app/PlugIns/Widget.appex"
+grep -q ddwidget "$TMP/xcarch2/Products/Applications/Demo.app/PlugIns/Widget.appex/Info.plist"
+
+mkdir -p "$TMP/xcarch3/Products/Applications/Demo.app/PlugIns"
+ln -s "../../IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Missing.appex" \
+  "$TMP/xcarch3/Products/Applications/Demo.app/PlugIns/Missing.appex"
+if bsl_materialize_bundle_symlinks "$TMP/xcarch3/Products/Applications" "$TMP/xcarch3" >/dev/null 2>&1; then
+  echo "expected missing UninstalledProducts appex to fail" >&2
+  exit 1
+fi
 ident=$(bsl_ipa_bundle_identity "$TMP/mini.ipa")
 echo "$ident" | grep -q $'com.demo.app\t42\t1.2.3'
 aid=$(printf '%s\n' '{"applications":[{"bundleID":"com.demo.app","appleId":1234567890}]}' | bsl_apple_id_from_list_apps com.demo.app)
