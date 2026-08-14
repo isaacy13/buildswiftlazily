@@ -560,32 +560,32 @@ a.secondary.block {
 }
 
 /*
- * Mobile: expand the list in-flow so #view is the only scroller.
- * Nested overflow + overlay dropdowns swallow (then dismiss) the gesture
- * on iOS — especially when every row is a button.
+ * Mobile: keep the list in-flow (nested position:absolute inside #view is
+ * flaky on iOS) but cap its height so it does not eat the screen. The list
+ * itself scrolls; #view is locked while a picker is open.
  */
 @media (hover: none), (max-width: 719px) {
   .field-pair:has(.combobox.is-open) {
     grid-template-columns: 1fr;
   }
 
-  .combobox.is-open .combo-anchor > input {
-    position: sticky;
-    top: 0;
-    z-index: 8;
-    background: var(--surface-2);
-  }
-
   .combo-list {
     position: static;
     z-index: auto;
-    max-height: none;
-    overflow: visible;
-    -webkit-overflow-scrolling: auto;
+    max-height: min(14.75rem, 38dvh);
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
     margin-top: 0.35rem;
     box-shadow: none;
-    touch-action: auto;
   }
+}
+
+#view.combo-scroll-lock {
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 .combo-count,
