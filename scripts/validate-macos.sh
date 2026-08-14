@@ -91,9 +91,14 @@ out=$(BSL_DRY_RUN=1 "$ROOT/scripts/upload-testflight.sh" --ipa "$TMP/mini.ipa" -
 echo "$out" | grep -q -- '--bundle-id com.demo.app' && pass "upload-package includes --bundle-id" || bad "upload-package missing --bundle-id"
 echo "$out" | grep -q -- '--bundle-version 7' && pass "upload-package includes --bundle-version" || bad "upload-package missing --bundle-version"
 echo "$out" | grep -q -- '--bundle-short-version-string 1.0' && pass "upload-package includes short version" || bad "upload-package missing short version"
-
+out=$(BSL_DRY_RUN=1 "$ROOT/scripts/upload-testflight.sh" --ipa "$TMP/mini.ipa" --apple-id 1234567890 --dry-run)
+echo "$out" | grep -q -- '--apple-id 1234567890' && pass "upload-package includes --apple-id" || bad "upload-package missing --apple-id"
 # shellcheck source=lib.sh
 source "$ROOT/scripts/lib.sh"
+aid=$(printf '%s\n' '{"applications":[{"bundleID":"com.demo.app","appleID":1234567890}]}' | bsl_apple_id_from_list_apps com.demo.app)
+[[ "$aid" == "1234567890" ]] && pass "list-apps appleID (capital ID)" || bad "list-apps appleID parse"
+aid=$(printf '%s\n' '{"data":[{"type":"apps","id":"9876543210","attributes":{"bundleId":"com.demo.app"}}]}' | bsl_apple_id_from_list_apps com.demo.app)
+[[ "$aid" == "9876543210" ]] && pass "ASC API apps.id Apple ID" || bad "ASC API apps.id parse"
 mkdir -p "$TMP/arch/Demo.app" "$TMP/real.appex"
 echo plugin > "$TMP/real.appex/Info.plist"
 ln -s "$TMP/real.appex" "$TMP/arch/Demo.app/PlugIn.appex"

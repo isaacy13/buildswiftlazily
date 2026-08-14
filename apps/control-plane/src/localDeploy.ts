@@ -317,6 +317,9 @@ export function lastBuildErrors(blob: string, max = 4): string {
     .map((l) => l.trim())
     .filter((l) =>
       /^(error:|fatal error:)/i.test(l) ||
+      /ERROR:\s*\[altool/i.test(l) ||
+      /Expected apple ID argument is missing/i.test(l) ||
+      /Could not resolve --apple-id/i.test(l) ||
       /\*\* ARCHIVE FAILED \*\*/i.test(l) ||
       /^The following build commands failed:/i.test(l) ||
       /unbound variable/i.test(l),
@@ -332,7 +335,7 @@ const EMBED_RE =
 const DANGLING_APPEX_RE =
   /Dangling bundle symlink|Could not find a real \.appex/i;
 const ASC_RE =
-  /Unable to authenticate|No suitable application records|ITMS-\d+|already been uploaded|redundant binary|invalid API key|altool:.*?failed|TESTFLIGHT_UPLOAD=fail|AuthKey_.*not found/i;
+  /Unable to authenticate|No suitable application records|ITMS-\d+|already been uploaded|redundant binary|invalid API key|altool:.*?failed|TESTFLIGHT_UPLOAD=fail|AuthKey_.*not found|Expected apple ID argument is missing|Could not resolve --apple-id/i;
 
 /**
  * Phone-facing hint for a failed helper script.
@@ -350,6 +353,13 @@ export function explainDeployFailure(raw: string, blob: string): string {
 
   if (/unbound variable/i.test(blob)) {
     return `${raw} — Helper script hit an unset variable (bash set -u). This is a tooling bug, not missing ASC credentials.${last}`;
+  }
+
+  if (
+    script !== "build-ios.sh" &&
+    /Expected apple ID argument is missing|Could not resolve --apple-id|set BSL_ASC_APPLE_ID/i.test(blob)
+  ) {
+    return `${raw} — altool --upload-package needs the numeric App Store Connect Apple ID. Set BSL_ASC_APPLE_ID in .env (App Store Connect → your app → App Information → Apple ID). Without it the IPA never reaches TestFlight.${last}`;
   }
 
   if (script === "upload-testflight.sh" || (script !== "build-ios.sh" && script !== "install-direct.sh" && ASC_RE.test(blob))) {

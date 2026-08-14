@@ -519,7 +519,8 @@ if bid:
 PY
 }
 
-# Pick the App Store Connect numeric Apple ID for a bundle id from altool --list-apps JSON/XML/text.
+# Pick the App Store Connect numeric Apple ID for a bundle id from altool --list-apps
+# JSON/XML/text, or from GET /v1/apps App Store Connect API JSON.
 bsl_apple_id_from_list_apps() {
   local bundle_id="$1"
   local payload
@@ -533,25 +534,40 @@ raw = open(sys.argv[2], encoding="utf-8").read()
 if not want or not raw.strip():
     sys.exit(1)
 
+def get_ci(d, *names):
+    if not isinstance(d, dict):
+        return None
+    lower = {str(k).lower(): v for k, v in d.items()}
+    for n in names:
+        v = lower.get(n.lower())
+        if v not in (None, ""):
+            return v
+    return None
+
 def from_mapping(obj):
     stack = [obj]
     while stack:
         cur = stack.pop()
         if isinstance(cur, dict):
+            attrs = cur.get("attributes") if isinstance(cur.get("attributes"), dict) else {}
             bid = str(
-                cur.get("bundleID")
-                or cur.get("bundleId")
-                or cur.get("bundle-identifier")
-                or cur.get("bundle_id")
+                get_ci(cur, "bundleID", "bundleId", "bundle-identifier", "bundle_id", "bundleIdentifier")
+                or get_ci(attrs, "bundleID", "bundleId", "bundle-identifier", "bundle_id", "bundleIdentifier")
                 or ""
             ).strip().lower()
-            aid = (
-                cur.get("appleId")
-                or cur.get("apple-id")
-                or cur.get("appAdamId")
-                or cur.get("adamId")
-                or cur.get("Apple ID")
+            aid = get_ci(
+                cur,
+                "appleId",
+                "appleID",
+                "apple-id",
+                "appAdamId",
+                "adamId",
+                "Apple ID",
+                "applicationId",
             )
+            typ = str(cur.get("type") or "").strip().lower()
+            if aid in (None, "") and typ in ("apps", "app"):
+                aid = cur.get("id")
             if bid == want and aid not in (None, ""):
                 print(str(aid).strip())
                 return True
@@ -560,16 +576,37 @@ def from_mapping(obj):
             stack.extend(cur)
     return False
 
+def try_json(blob):
+    blob = blob.strip()
+    candidates = []
+    if blob.startswith("{") or blob.startswith("["):
+        candidates.append(blob)
+    start, end = blob.find("{"), blob.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(blob[start : end + 1])
+    seen = set()
+    for c in candidates:
+        if c in seen:
+            continue
+        seen.add(c)
+        try:
+            if from_mapping(json.loads(c)):
+                return True
+        except Exception:
+            pass
+    return False
+
 text = raw.strip()
-if text.startswith("{") or text.startswith("["):
-    try:
-        if from_mapping(json.loads(text)):
-            sys.exit(0)
-    except Exception:
-        pass
+if try_json(text):
+    sys.exit(0)
 
 try:
-    root = ET.fromstring(text)
+    xml_text = text
+    if not xml_text.lstrip().startswith("<"):
+        lt = xml_text.find("<")
+        if lt >= 0:
+            xml_text = xml_text[lt:]
+    root = ET.fromstring(xml_text)
     def plist_to_py(elem):
         if elem.tag == "dict":
             d = {}
@@ -600,7 +637,7 @@ except Exception:
     pass
 
 idx = text.lower().find(want)
-window = text[max(0, idx - 400) : idx + 400] if idx >= 0 else text
+window = text[max(0, idx - 800) : idx + 800] if idx >= 0 else text
 m = re.search(r"(?:apple[\s-]?id|adam[\s-]?id)[\"'\s:=]+(\d{5,})", window, re.I)
 if m:
     print(m.group(1))
@@ -611,4 +648,86 @@ PY
   st=$?
   rm -f "$payload"
   return "$st"
+}
+
+# ES256 JWT for App Store Connect API (AuthKey_*.p8). Prints token to stdout.
+bsl_asc_jwt() {
+  local key_id="$1" issuer_id="$2" p8="$3"
+  [[ -n "$key_id" && -n "$issuer_id" && -f "$p8" ]] || return 1
+  python3 - "$key_id" "$issuer_id" "$p8" <<'PY'
+import base64, json, subprocess, sys, time
+
+kid, iss, p8 = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+def der_ecdsa_to_rs(der: bytes) -> bytes:
+    if not der or der[0] != 0x30:
+        raise ValueError("not a DER ECDSA signature")
+    i = 1
+    seq_len = der[i]
+    i += 1
+    if seq_len & 0x80:
+        i += seq_len & 0x7F
+
+    def read_int() -> bytes:
+        nonlocal i
+        if i >= len(der) or der[i] != 0x02:
+            raise ValueError("expected INTEGER")
+        i += 1
+        ln = der[i]
+        i += 1
+        if ln & 0x80:
+            n = ln & 0x7F
+            ln = int.from_bytes(der[i : i + n], "big")
+            i += n
+        val = der[i : i + ln]
+        i += ln
+        while len(val) > 32 and val[0] == 0:
+            val = val[1:]
+        if len(val) > 32:
+            raise ValueError("integer too large for P-256")
+        return val.rjust(32, b"\x00")
+
+    return read_int() + read_int()
+
+header = b64url(json.dumps({"alg": "ES256", "kid": kid, "typ": "JWT"}, separators=(",", ":")).encode())
+now = int(time.time())
+payload = b64url(json.dumps({
+    "iss": iss,
+    "iat": now,
+    "exp": now + 12 * 60,
+    "aud": "appstoreconnect-apple.com",
+}, separators=(",", ":")).encode())
+signing_input = f"{header}.{payload}".encode()
+der = subprocess.check_output(["openssl", "dgst", "-sha256", "-sign", p8], input=signing_input)
+print(f"{header}.{payload}.{b64url(der_ecdsa_to_rs(der))}")
+PY
+}
+
+# Look up numeric Apple ID via GET /v1/apps?filter[bundleId]=…
+bsl_asc_api_apple_id() {
+  local bundle_id="$1" key_id="$2" issuer_id="$3" p8="$4"
+  local token json
+  [[ -n "$bundle_id" && -n "$key_id" && -n "$issuer_id" && -f "$p8" ]] || return 1
+  token="$(bsl_asc_jwt "$key_id" "$issuer_id" "$p8")" || return 1
+  json="$(python3 - "$bundle_id" "$token" <<'PY'
+import sys, urllib.error, urllib.parse, urllib.request
+
+bundle, token = sys.argv[1], sys.argv[2]
+q = urllib.parse.urlencode({"filter[bundleId]": bundle, "limit": "10"})
+req = urllib.request.Request(
+    "https://api.appstoreconnect.apple.com/v1/apps?" + q,
+    headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+)
+try:
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        sys.stdout.write(resp.read().decode("utf-8", "replace"))
+except Exception as e:
+    sys.stderr.write(f"ASC apps lookup failed: {e}\n")
+    sys.exit(1)
+PY
+)" || return 1
+  printf '%s\n' "$json" | bsl_apple_id_from_list_apps "$bundle_id"
 }

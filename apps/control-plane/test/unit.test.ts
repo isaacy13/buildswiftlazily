@@ -382,6 +382,16 @@ test("explainDeployFailure still explains real altool failures", () => {
   assert.match(msg, /TestFlight\/ASC upload issue/);
 });
 
+test("explainDeployFailure explains missing altool --apple-id", () => {
+  const raw = "upload-testflight.sh exited 1 after 49s";
+  const blob = `${raw}\nCould not resolve --apple-id from altool --list-apps (set BSL_ASC_APPLE_ID). Continuing without it.\nERROR: [altool.101B27130] Expected apple ID argument is missing, --apple-id. (21)\nTESTFLIGHT_UPLOAD=fail`;
+  const msg = explainDeployFailure(raw, blob);
+  assert.match(msg, /numeric App Store Connect Apple ID/);
+  assert.match(msg, /BSL_ASC_APPLE_ID/);
+  assert.match(msg, /Expected apple ID argument is missing/);
+  assert.doesNotMatch(msg, /Archive or IPA export failed/);
+});
+
 test("explainDeployFailure explains dangling PlugIns appex aliases", () => {
   const raw = "build-ios.sh exited 2 after 7m 58s";
   const blob = `${raw}\n** ARCHIVE SUCCEEDED **\nerror: Dangling bundle symlink (ITMS-90018): GuideAI.app/PlugIns/GuideAILiveActivityExtension.appex -> ../../IntermediateBuildFilesPath/UninstalledProducts/iphoneos/GuideAILiveActivityExtension.appex`;

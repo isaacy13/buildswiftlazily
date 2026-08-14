@@ -130,7 +130,7 @@ export async function buildSetupChecklist(env: Env): Promise<{
     label: "App Store Connect API key (TestFlight)",
     ok: ascKey && ascIssuer,
     required: false,
-    hint: "BSL_ASC_KEY_ID + BSL_ASC_ISSUER_ID + AuthKey_*.p8 in ~/.appstoreconnect/private_keys",
+    hint: "BSL_ASC_KEY_ID + BSL_ASC_ISSUER_ID + AuthKey_*.p8; set BSL_ASC_APPLE_ID if TestFlight uploads never appear",
   });
 
   const reposYamlPath = path.join(REPO_ROOT, "config/repos.yaml");

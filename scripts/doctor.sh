@@ -163,6 +163,11 @@ if [[ -n "${BSL_ASC_KEY_ID:-}${ASC_KEY_ID:-}" && -n "${BSL_ASC_ISSUER_ID:-}${ASC
   else
     note "ASC key IDs set but AuthKey_${KEY_ID}.p8 not found under $KEY_DIR"
   fi
+  if [[ -n "${BSL_ASC_APPLE_ID:-${ASC_APPLE_ID:-}}" ]]; then
+    pass "BSL_ASC_APPLE_ID set (altool --upload-package)"
+  else
+    note "BSL_ASC_APPLE_ID unset — upload looks it up; set the numeric App Information Apple ID if TestFlight stays empty"
+  fi
 else
   note "TestFlight ASC API key not configured (optional)"
 fi
