@@ -182,7 +182,46 @@ function setTab(tab) {
   if (tab === "status") loadStatus();
 }
 
+function isLocalPickerFixture() {
+  try {
+    const host = location.hostname;
+    if (host !== "localhost" && host !== "127.0.0.1") return false;
+    return new URLSearchParams(location.search).has("picker-fixture");
+  } catch {
+    return false;
+  }
+}
+
+function loadPickerFixture() {
+  state.config = { defaults: { deploy_mode: "ota" }, deployEngine: "local" };
+  state.setup = { items: [] };
+  state.repos = [
+    {
+      full_name: "isaacy13/GuideAI",
+      name: "GuideAI",
+      default_branch: "main",
+      favorite: true,
+    },
+  ];
+  state.selectedRepo = "isaacy13/GuideAI";
+  state.selectedRef = "main";
+  state.scheme = "GuideAI";
+  state.branchesLoading = false;
+  state.branches = [
+    { name: "main" },
+    { name: "master" },
+    ...Array.from({ length: 36 }, (_, i) => ({
+      name: `cursor/feature-${String(i + 1).padStart(2, "0")}-scroll-4b3d`,
+    })),
+  ];
+  render();
+}
+
 async function bootstrap() {
+  if (isLocalPickerFixture()) {
+    loadPickerFixture();
+    return;
+  }
   try {
     const health = await api("/api/health");
     state.apiAuthRequired = Boolean(health.apiAuthRequired);
@@ -1040,8 +1079,7 @@ function bindCombobox(view, { id, openKey, queryKey, highlightKey, onSelect }) {
     list.addEventListener(
       "touchmove",
       (e) => {
-        // Only trap the gesture when this list is the thing scrolling
-        // (overlay). In-flow mobile lists let #view scroll instead.
+        // Keep the gesture on this list so #view does not steal it.
         if (list.scrollHeight > list.clientHeight + 1) e.stopPropagation();
       },
       { passive: true },
@@ -2258,6 +2296,10 @@ function render(opts = {}) {
   lastScrollViewKey = key;
   liveLogScrollBound = null;
   if (live) liveLogFollowBottom = true;
+  view.classList.toggle(
+    "combo-scroll-lock",
+    Boolean(state.repoPickerOpen || state.branchPickerOpen),
+  );
   bindViewEvents(view);
   const logPre = view.querySelector("#liveLog");
   if (logPre) bindLiveLogFollow(logPre);
