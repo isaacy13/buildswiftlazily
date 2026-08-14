@@ -11,6 +11,7 @@ buildswiftlazily is a **single-operator** Mac-hosted control plane plus shell sc
 | `scripts/serve-ota.sh` | Copy IPA + write `manifest.plist` / install HTML under the artifact www root; ensure Tailscale Serve. |
 | `scripts/serve-control.sh` | Point `tailscale serve` at the control plane port. |
 | `scripts/upload-testflight.sh` | Validate + upload App Store IPA via `altool` (`--upload-package`, ASC API key). |
+| `scripts/check-testflight-version.sh` | Before archive/upload, query ASC so a duplicate **CFBundleVersion** fails fast. |
 | `scripts/install-direct.sh` | `devicectl` install/launch on a paired **iPhone or Apple Watch**. |
 | `scripts/prepare-keychain.sh` | One-time unattended codesign Keychain prep. |
 | `scripts/ttl-sweep.sh` | Expire OTA/work/builds trees older than `BSL_ARTIFACT_TTL_DAYS`; `--job` drops DerivedData after a build. |
@@ -21,7 +22,7 @@ buildswiftlazily is a **single-operator** Mac-hosted control plane plus shell sc
 
 1. PWA `POST /api/deploy` with Bearer `BSL_API_TOKEN`.
 2. Control plane validates repo/ref/scheme/paths, acquires deploy gate, creates a job.
-3. `runLocalDeploy` downloads a GitHub tarball (symlink-safe extract), runs `build-ios.sh`.
+3. `runLocalDeploy` downloads a GitHub tarball (symlink-safe extract). TestFlight jobs check **CFBundleVersion** against App Store Connect, then run `build-ios.sh`.
 4. For OTA: `serve-ota.sh` publishes under `~/buildswiftlazily/artifacts/www/ota/<uuid>/`.
 5. PWA polls `/api/jobs/:id` and shows the install URL (`https://$BSL_TS_HOST/ota/...`).
 6. When the job finishes, `ttl-sweep.sh --job` deletes that job’s source checkout and DerivedData/xcarchive. Age-based sweep (startup + hourly + after each job) expires leftover `work/`, `builds/`, and OTA pages.

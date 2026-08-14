@@ -108,6 +108,25 @@ jobs:
 
       # Pass untrusted workflow_dispatch values only via env — never ${{ inputs.* }}
       # inside shell strings (script-injection).
+      - name: Check TestFlight build number
+        if: ${{ inputs.deploy_mode == 'testflight' }}
+        env:
+          BSL_ASC_KEY_ID: ${{ secrets.BSL_ASC_KEY_ID }}
+          BSL_ASC_ISSUER_ID: ${{ secrets.BSL_ASC_ISSUER_ID }}
+          API_PRIVATE_KEYS_DIR: ${{ secrets.BSL_ASC_KEYS_DIR || vars.BSL_ASC_KEYS_DIR }}
+          BSL_ASC_KEY_PATH: ${{ secrets.BSL_ASC_KEY_PATH || vars.BSL_ASC_KEY_PATH }}
+          PROJECT_PATH: ${{ inputs.project_path }}
+          SCHEME: ${{ inputs.scheme }}
+          CONFIGURATION: ${{ inputs.configuration }}
+        run: |
+          set -euo pipefail
+          chmod +x tooling/scripts/*.sh
+          tooling/scripts/check-testflight-version.sh \
+            --root target \
+            --project-path "${PROJECT_PATH:-.}" \
+            --scheme "$SCHEME" \
+            --configuration "${CONFIGURATION:-Release}"
+
       - name: Build
         env:
           BSL_TEAM_ID: ${{ secrets.BSL_TEAM_ID || vars.BSL_TEAM_ID }}

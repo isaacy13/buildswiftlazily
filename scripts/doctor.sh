@@ -168,6 +168,7 @@ if [[ -n "${BSL_ASC_KEY_ID:-}${ASC_KEY_ID:-}" && -n "${BSL_ASC_ISSUER_ID:-}${ASC
   else
     note "BSL_ASC_APPLE_ID unset — upload looks it up; set the numeric App Information Apple ID if TestFlight stays empty"
   fi
+  note "TestFlight jobs check CFBundleVersion against ASC before archive (./scripts/check-testflight-version.sh)"
 else
   note "TestFlight ASC API key not configured (optional)"
 fi

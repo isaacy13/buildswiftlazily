@@ -731,3 +731,611 @@ PY
 )" || return 1
   printf '%s\n' "$json" | bsl_apple_id_from_list_apps "$bundle_id"
 }
+
+# Locate AuthKey_<KEY_ID>.p8. Optional second arg is a file or directory override.
+bsl_asc_find_p8() {
+  local key_id="$1"
+  local candidate="${2:-${BSL_ASC_KEY_PATH:-${API_PRIVATE_KEYS_DIR:-}}}"
+  [[ -n "$key_id" ]] || return 1
+  if [[ -n "$candidate" ]]; then
+    candidate="${candidate/#\~/$HOME}"
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    if [[ -d "$candidate" && -f "$candidate/AuthKey_${key_id}.p8" ]]; then
+      printf '%s\n' "$candidate/AuthKey_${key_id}.p8"
+      return 0
+    fi
+  fi
+  local d
+  for d in \
+    "$HOME/.appstoreconnect/private_keys" \
+    "$HOME/private_keys" \
+    "$HOME/.private_keys" \
+    "./private_keys"; do
+    if [[ -f "$d/AuthKey_${key_id}.p8" ]]; then
+      printf '%s\n' "$d/AuthKey_${key_id}.p8"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Read PRODUCT_BUNDLE_IDENTIFIER / CURRENT_PROJECT_VERSION / MARKETING_VERSION
+# from an Xcode checkout (pbxproj, xcconfig, Info.plist). Prints:
+#   bundle_id<TAB>version<TAB>short_version
+# Prefers Release (or the given configuration) on an application target matching scheme.
+bsl_source_bundle_identity() {
+  local root="$1" scheme="${2:-}" configuration="${3:-Release}"
+  [[ -d "$root" ]] || return 1
+  python3 - "$root" "$scheme" "$configuration" <<'PY'
+import os, plistlib, re, sys
+
+root, scheme, configuration = sys.argv[1], sys.argv[2], sys.argv[3]
+SKIP_DIRS = {
+    "Pods", "Carthage", "DerivedData", ".git", "build", ".build",
+    "node_modules", "vendor", ".swiftpm", "xcuserdata",
+}
+SKIP_NAME_BITS = ("tests", "uitests")
+EXT_HINTS = (
+    "tests", "uitests", "widget", "extension", "watch", "intent", "clip", "appex",
+)
+
+def skip_dir(name: str) -> bool:
+    if name in SKIP_DIRS or name.endswith(".xcframework") or name.endswith(".framework"):
+        return True
+    low = name.lower()
+    return low.endswith("tests") or low.endswith("uitests")
+
+def strip_val(raw: str) -> str:
+    v = raw.strip().strip(";")
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        v = v[1:-1]
+    return v.strip()
+
+def subst(val: str, mapping: dict, depth: int = 0) -> str:
+    if not val or depth > 8:
+        return val
+    def repl(m):
+        key = m.group(1).split(":")[0]
+        got = mapping.get(key)
+        return got if got not in (None, "") else m.group(0)
+    nxt = re.sub(r"\$\(([^)]+)\)", repl, val)
+    return subst(nxt, mapping, depth + 1) if nxt != val else nxt
+
+def extract_brace(text: str, open_idx: int) -> str:
+    depth = 0
+    i = open_idx
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_idx : i + 1]
+        elif c == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                if text[i] == "\\":
+                    i += 1
+                i += 1
+        i += 1
+    return text[open_idx:]
+
+SETTING_KEYS = (
+    "CURRENT_PROJECT_VERSION",
+    "MARKETING_VERSION",
+    "PRODUCT_BUNDLE_IDENTIFIER",
+    "PRODUCT_NAME",
+    "INFOPLIST_KEY_CFBundleDisplayName",
+)
+
+def parse_settings_blob(blob: str) -> dict:
+    out = {}
+    for key in SETTING_KEYS:
+        m = re.search(rf"{key}\s*=\s*([^;\n]+)", blob)
+        if m:
+            out[key] = strip_val(m.group(1))
+    return out
+
+def parse_xcconfig(path: str) -> dict:
+    out = {}
+    try:
+        text = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return out
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("//") or s.startswith("#"):
+            continue
+        m = re.match(r"([A-Z0-9_]+)\s*=\s*(.*)$", s)
+        if m and m.group(1) in SETTING_KEYS:
+            out[m.group(1)] = strip_val(m.group(2))
+    return out
+
+def parse_info_plist(path: str) -> dict:
+    try:
+        with open(path, "rb") as f:
+            info = plistlib.load(f)
+    except Exception:
+        return {}
+    if not isinstance(info, dict):
+        return {}
+    out = {}
+    bid = str(info.get("CFBundleIdentifier") or "").strip()
+    ver = str(info.get("CFBundleVersion") or "").strip()
+    short = str(info.get("CFBundleShortVersionString") or "").strip()
+    name = str(info.get("CFBundleName") or info.get("CFBundleDisplayName") or "").strip()
+    if bid:
+        out["PRODUCT_BUNDLE_IDENTIFIER"] = bid
+    if ver:
+        out["CURRENT_PROJECT_VERSION"] = ver
+    if short:
+        out["MARKETING_VERSION"] = short
+    if name:
+        out["PRODUCT_NAME"] = name
+    return out
+
+def parse_pbxproj(path: str) -> list:
+    try:
+        text = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return []
+    objects = {}
+    for m in re.finditer(
+        r"([0-9A-Fa-f]{20,32})(?:\s*/\*[^*]*\*/)?\s*=\s*\{",
+        text,
+    ):
+        block = extract_brace(text, m.end() - 1)
+        objects[m.group(1)] = block
+
+    lists = {}
+    for oid, block in objects.items():
+        if "isa = XCConfigurationList" not in block:
+            continue
+        ids = re.findall(r"([0-9A-Fa-f]{20,32})", block.split("buildConfigurations", 1)[-1] if "buildConfigurations" in block else "")
+        lists[oid] = ids
+
+    targets = []
+    for oid, block in objects.items():
+        if "isa = PBXNativeTarget" not in block:
+            continue
+        name_m = re.search(r"\bname\s*=\s*([^;]+);", block)
+        ptype_m = re.search(r"productType\s*=\s*([^;]+);", block)
+        clist_m = re.search(r"buildConfigurationList\s*=\s*([0-9A-Fa-f]{20,32})", block)
+        name = strip_val(name_m.group(1)) if name_m else ""
+        ptype = strip_val(ptype_m.group(1)) if ptype_m else ""
+        clist = clist_m.group(1) if clist_m else ""
+        targets.append((name, ptype, clist))
+
+    cfgs = []
+    for oid, block in objects.items():
+        if "isa = XCBuildConfiguration" not in block:
+            continue
+        name_m = re.search(r"\bname\s*=\s*([^;]+);", block)
+        settings_m = re.search(r"buildSettings\s*=\s*\{", block)
+        settings = {}
+        if settings_m:
+            settings = parse_settings_blob(extract_brace(block, settings_m.end() - 1))
+        else:
+            settings = parse_settings_blob(block)
+        cfg_name = strip_val(name_m.group(1)) if name_m else ""
+        cfgs.append((oid, cfg_name, settings))
+
+    # Attach target name/type onto each configuration when we can.
+    cfg_by_id = {oid: (name, settings) for oid, name, settings in cfgs}
+    out = []
+    used = set()
+    for tname, ptype, clist in targets:
+        for cid in lists.get(clist, []):
+            if cid not in cfg_by_id:
+                continue
+            cfg_name, settings = cfg_by_id[cid]
+            row = dict(settings)
+            row["_config"] = cfg_name
+            row["_target"] = tname
+            row["_product"] = ptype
+            out.append(row)
+            used.add(cid)
+    for oid, cfg_name, settings in cfgs:
+        if oid in used:
+            continue
+        row = dict(settings)
+        row["_config"] = cfg_name
+        row["_target"] = ""
+        row["_product"] = ""
+        out.append(row)
+    return out
+
+candidates = []
+info_rows = []
+xc_map = {}
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames[:] = [d for d in dirnames if not skip_dir(d)]
+    for fn in filenames:
+        path = os.path.join(dirpath, fn)
+        if fn == "project.pbxproj":
+            candidates.extend(parse_pbxproj(path))
+        elif fn.endswith(".xcconfig"):
+            xc_map.update(parse_xcconfig(path))
+        elif fn == "Info.plist":
+            rel = path[len(root) :].replace("\\", "/").lower()
+            if any(b in rel for b in ("/pods/", "/tests/", "/uitests/", ".appex/", ".xctest/")):
+                continue
+            row = parse_info_plist(path)
+            if row:
+                row["_config"] = ""
+                row["_target"] = ""
+                row["_product"] = ""
+                info_rows.append(row)
+
+# xcconfig values fill holes on every candidate.
+if xc_map:
+    if not candidates:
+        row = dict(xc_map)
+        row["_config"] = configuration or "Release"
+        row["_target"] = scheme
+        row["_product"] = "com.apple.product-type.application"
+        candidates.append(row)
+    else:
+        for row in candidates:
+            for k, v in xc_map.items():
+                if not row.get(k):
+                    row[k] = v
+
+candidates.extend(info_rows)
+
+def looks_extension(row: dict) -> bool:
+    ptype = (row.get("_product") or "").lower()
+    if "application" in ptype and "watch" not in ptype:
+        return False
+    if "appex" in ptype or "extension" in ptype or "watch" in ptype:
+        return True
+    blob = " ".join(
+        str(row.get(k) or "") for k in ("_target", "PRODUCT_NAME", "PRODUCT_BUNDLE_IDENTIFIER")
+    ).lower()
+    return any(h in blob for h in EXT_HINTS)
+
+def score(row: dict) -> int:
+    s = 0
+    cfg = (row.get("_config") or "").strip()
+    if configuration and cfg.lower() == configuration.lower():
+        s += 30
+    elif cfg.lower() == "release":
+        s += 20
+    elif cfg.lower() == "debug":
+        s -= 5
+    ptype = (row.get("_product") or "").lower()
+    if "application" in ptype:
+        s += 15
+    if looks_extension(row):
+        s -= 40
+    tname = (row.get("_target") or row.get("PRODUCT_NAME") or "").strip()
+    if scheme and tname and scheme.lower() == tname.lower():
+        s += 25
+    elif scheme and tname and scheme.lower() in tname.lower():
+        s += 8
+    if row.get("CURRENT_PROJECT_VERSION"):
+        s += 2
+    if row.get("PRODUCT_BUNDLE_IDENTIFIER"):
+        s += 2
+    return s
+
+if not candidates:
+    sys.exit(1)
+
+best = sorted(candidates, key=score, reverse=True)[0]
+mapping = {}
+for row in sorted(candidates, key=score):
+    for k in SETTING_KEYS:
+        if row.get(k):
+            mapping[k] = row[k]
+for k in SETTING_KEYS:
+    if best.get(k):
+        mapping[k] = best[k]
+if scheme:
+    mapping.setdefault("PRODUCT_NAME", scheme)
+    mapping.setdefault("TARGET_NAME", scheme)
+
+bid = subst(str(best.get("PRODUCT_BUNDLE_IDENTIFIER") or mapping.get("PRODUCT_BUNDLE_IDENTIFIER") or ""), mapping)
+ver = subst(str(best.get("CURRENT_PROJECT_VERSION") or mapping.get("CURRENT_PROJECT_VERSION") or ""), mapping)
+short = subst(str(best.get("MARKETING_VERSION") or mapping.get("MARKETING_VERSION") or ""), mapping)
+if "$(" in bid:
+    bid = ""
+if "$(" in ver:
+    ver = ""
+if "$(" in short:
+    short = ""
+bid, ver, short = bid.strip(), ver.strip(), short.strip()
+if not bid and not ver:
+    sys.exit(1)
+print(f"{bid}\t{ver}\t{short}")
+PY
+}
+
+# Parse App Store Connect GET /v1/builds JSON (or {exact, latest} wrapper).
+# Prints EXISTS=0|1 plus MATCH_* / LATEST_* fields. Arg 1 is CFBundleVersion.
+# JSON is read from stdin (copied to a temp file so the Python heredoc can use stdin).
+bsl_asc_parse_builds_status() {
+  local want="$1"
+  local payload
+  payload="$(mktemp)"
+  cat >"$payload"
+  python3 - "$want" "$payload" <<'PY'
+import json, re, sys
+
+want = (sys.argv[1] or "").strip()
+raw = open(sys.argv[2], encoding="utf-8").read()
+try:
+    payload = json.loads(raw)
+except Exception:
+    sys.exit(1)
+
+def as_list(obj):
+    if obj is None:
+        return []
+    if isinstance(obj, list):
+        return obj
+    return [obj]
+
+def walk(obj, acc_builds, acc_inc):
+    if isinstance(obj, dict):
+        typ = str(obj.get("type") or "")
+        if typ == "builds":
+            acc_builds.append(obj)
+        elif typ == "preReleaseVersions" and obj.get("id"):
+            acc_inc[str(obj["id"])] = obj
+        data = obj.get("data")
+        if isinstance(data, list):
+            for item in data:
+                walk(item, acc_builds, acc_inc)
+        elif isinstance(data, dict):
+            walk(data, acc_builds, acc_inc)
+        for inc in as_list(obj.get("included")):
+            walk(inc, acc_builds, acc_inc)
+        for k in ("exact", "latest"):
+            if k in obj:
+                walk(obj[k], acc_builds, acc_inc)
+    elif isinstance(obj, list):
+        for item in obj:
+            walk(item, acc_builds, acc_inc)
+
+builds, included = [], {}
+walk(payload, builds, included)
+
+def attrs(b):
+    a = b.get("attributes") if isinstance(b.get("attributes"), dict) else {}
+    return a
+
+def version_of(b):
+    return str(attrs(b).get("version") or "").strip()
+
+def state_of(b):
+    return str(attrs(b).get("processingState") or "").strip()
+
+def uploaded_of(b):
+    return str(attrs(b).get("uploadedDate") or "")
+
+def short_of(b):
+    rel = b.get("relationships") if isinstance(b.get("relationships"), dict) else {}
+    prv = rel.get("preReleaseVersion") if isinstance(rel.get("preReleaseVersion"), dict) else {}
+    data = prv.get("data") if isinstance(prv.get("data"), dict) else {}
+    pid = str(data.get("id") or "")
+    inc = included.get(pid) or {}
+    ia = inc.get("attributes") if isinstance(inc.get("attributes"), dict) else {}
+    return str(ia.get("version") or "").strip()
+
+# Dedupe by id, keep first.
+seen = set()
+uniq = []
+for b in builds:
+    bid = str(b.get("id") or "")
+    key = bid or (version_of(b), uploaded_of(b), id(b))
+    if key in seen:
+        continue
+    seen.add(key)
+    uniq.append(b)
+
+matches = [b for b in uniq if want and version_of(b) == want]
+latest = None
+dated = [b for b in uniq if uploaded_of(b)]
+if dated:
+    latest = sorted(dated, key=uploaded_of, reverse=True)[0]
+elif uniq:
+    latest = uniq[0]
+match = matches[0] if matches else None
+
+def ver_tuple(s):
+    if not s or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", s):
+        return None
+    return tuple(int(p) for p in s.split("."))
+
+older = 0
+lt = ver_tuple(want)
+rt = ver_tuple(version_of(latest) if latest else "")
+if lt is not None and rt is not None:
+    n = max(len(lt), len(rt))
+    lt = lt + (0,) * (n - len(lt))
+    rt = rt + (0,) * (n - len(rt))
+    if lt < rt:
+        older = 1
+
+print(f"EXISTS={1 if match else 0}")
+if match:
+    print(f"MATCH_VERSION={version_of(match)}")
+    print(f"MATCH_STATE={state_of(match)}")
+    ms = short_of(match)
+    if ms:
+        print(f"MATCH_SHORT={ms}")
+if latest:
+    print(f"LATEST_VERSION={version_of(latest)}")
+    print(f"LATEST_STATE={state_of(latest)}")
+    ls = short_of(latest)
+    if ls:
+        print(f"LATEST_SHORT={ls}")
+print(f"OLDER={older}")
+PY
+  local st
+  st=$?
+  rm -f "$payload"
+  return "$st"
+}
+
+# Query App Store Connect for existing builds of bundle_id + CFBundleVersion.
+# Prints the same keys as bsl_asc_parse_builds_status. Uses an already-minted JWT.
+bsl_asc_api_build_status() {
+  local bundle_id="$1" version="$2" token="$3"
+  [[ -n "$bundle_id" && -n "$version" && -n "$token" ]] || return 1
+  python3 - "$bundle_id" "$version" "$token" <<'PY'
+import json, sys, urllib.error, urllib.parse, urllib.request
+
+bundle, version, token = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def get(url: str) -> dict:
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception as e:
+        sys.stderr.write(f"ASC builds lookup failed: {e}\n")
+        sys.exit(1)
+
+q_app = urllib.parse.urlencode({"filter[bundleId]": bundle, "limit": "10"})
+apps = get("https://api.appstoreconnect.apple.com/v1/apps?" + q_app)
+app_id = ""
+for item in apps.get("data") or []:
+    if not isinstance(item, dict):
+        continue
+    attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+    bid = str(attrs.get("bundleId") or "").strip()
+    if bid.lower() == bundle.lower():
+        app_id = str(item.get("id") or "").strip()
+        break
+if not app_id:
+    sys.stderr.write(f"No App Store Connect app record for {bundle}\n")
+    sys.exit(2)
+
+fields = "version,processingState,uploadedDate,expired"
+inc = "preReleaseVersion"
+q_exact = urllib.parse.urlencode(
+    {
+        "filter[app]": app_id,
+        "filter[version]": version,
+        "include": inc,
+        "fields[builds]": fields,
+        "fields[preReleaseVersions]": "version",
+        "limit": "10",
+    }
+)
+q_latest = urllib.parse.urlencode(
+    {
+        "filter[app]": app_id,
+        "sort": "-uploadedDate",
+        "include": inc,
+        "fields[builds]": fields,
+        "fields[preReleaseVersions]": "version",
+        "limit": "5",
+    }
+)
+exact = get("https://api.appstoreconnect.apple.com/v1/builds?" + q_exact)
+latest = get("https://api.appstoreconnect.apple.com/v1/builds?" + q_latest)
+json.dump({"exact": exact, "latest": latest, "appId": app_id}, sys.stdout)
+PY
+}
+
+# Fail (exit 2) when CFBundleVersion already exists on App Store Connect.
+# Skip (exit 0) when dry-run, unconfigured, or the API is unreachable.
+# Usage: bsl_asc_assert_unique_cfbundle_version <bundle_id> <version> [short]
+bsl_asc_assert_unique_cfbundle_version() {
+  local bundle_id="$1" version="$2" short="${3:-}"
+  if [[ "${BSL_SKIP_ASC_VERSION_CHECK:-0}" == "1" ]]; then
+    echo "TESTFLIGHT_VERSION_CHECK=skip (BSL_SKIP_ASC_VERSION_CHECK=1)"
+    return 0
+  fi
+  if [[ -z "$bundle_id" || -z "$version" ]]; then
+    echo "TESTFLIGHT_VERSION_CHECK=skip (need bundle id + CFBundleVersion)"
+    return 0
+  fi
+  if [[ "${BSL_DRY_RUN:-0}" == "1" ]]; then
+    echo "DRY_RUN: would query App Store Connect for ${bundle_id} CFBundleVersion=${version}${short:+ short=${short}}"
+    echo "TESTFLIGHT_VERSION_CHECK=dry-run"
+    return 0
+  fi
+
+  local key_id issuer_id p8 token json status
+  key_id="${BSL_ASC_KEY_ID:-${ASC_KEY_ID:-}}"
+  issuer_id="${BSL_ASC_ISSUER_ID:-${ASC_ISSUER_ID:-}}"
+  if [[ -z "$key_id" || -z "$issuer_id" ]]; then
+    echo "TESTFLIGHT_VERSION_CHECK=skip (no ASC API key — upload will need BSL_ASC_KEY_ID / ISSUER_ID)"
+    return 0
+  fi
+  p8="$(bsl_asc_find_p8 "$key_id" || true)"
+  if [[ -z "$p8" || ! -f "$p8" ]]; then
+    echo "TESTFLIGHT_VERSION_CHECK=skip (AuthKey_${key_id}.p8 not found)"
+    return 0
+  fi
+  token="$(bsl_asc_jwt "$key_id" "$issuer_id" "$p8" || true)"
+  if [[ -z "$token" ]]; then
+    echo "TESTFLIGHT_VERSION_CHECK=skip (could not mint ASC JWT)"
+    return 0
+  fi
+
+  echo "Checking App Store Connect for ${bundle_id} CFBundleVersion=${version} (before a long archive/upload)…"
+  local errf
+  errf="$(mktemp)"
+  json="$(bsl_asc_api_build_status "$bundle_id" "$version" "$token" 2>"$errf" || true)"
+  if [[ -z "$json" ]]; then
+    if [[ -s "$errf" ]]; then
+      echo "TESTFLIGHT_VERSION_CHECK=skip (ASC API: $(tr '\n' ' ' <"$errf" | head -c 200))"
+    else
+      echo "TESTFLIGHT_VERSION_CHECK=skip (ASC API unreachable)"
+    fi
+    rm -f "$errf"
+    return 0
+  fi
+  rm -f "$errf"
+  status="$(printf '%s\n' "$json" | bsl_asc_parse_builds_status "$version" || true)"
+  if [[ -z "$status" ]]; then
+    echo "TESTFLIGHT_VERSION_CHECK=skip (could not parse ASC builds response)"
+    return 0
+  fi
+  local exists=0 latest="" latest_short="" latest_state="" match_state="" older=0
+  while IFS= read -r line; do
+    case "$line" in
+      EXISTS=1) exists=1 ;;
+      MATCH_STATE=*) match_state="${line#MATCH_STATE=}" ;;
+      LATEST_VERSION=*) latest="${line#LATEST_VERSION=}" ;;
+      LATEST_SHORT=*) latest_short="${line#LATEST_SHORT=}" ;;
+      LATEST_STATE=*) latest_state="${line#LATEST_STATE=}" ;;
+      OLDER=1) older=1 ;;
+    esac
+  done <<<"$status"
+
+  if [[ "$exists" == "1" ]]; then
+    echo "error: CFBundleVersion ${version} already exists on App Store Connect${match_state:+ (state=${match_state})}." >&2
+    if [[ -n "$latest" ]]; then
+      echo "Latest ASC build: ${latest}${latest_short:+ (${latest_short})}${latest_state:+, ${latest_state}}" >&2
+    fi
+    echo "Bump CURRENT_PROJECT_VERSION / CFBundleVersion in Xcode, commit, and retry. Archive was not started." >&2
+    echo "TESTFLIGHT_VERSION_CHECK=duplicate" >&2
+    return 2
+  fi
+
+  if [[ -n "$latest" ]]; then
+    echo "Latest ASC build: ${latest}${latest_short:+ (${latest_short})}${latest_state:+, ${latest_state}}"
+  else
+    echo "No existing TestFlight builds found for ${bundle_id}."
+  fi
+  if [[ "$older" == "1" && -n "$latest" ]]; then
+    echo "Note: CFBundleVersion ${version} is lower than latest ASC ${latest} — Apple may still reject the upload."
+  fi
+  echo "CFBundleVersion ${version} is new on App Store Connect."
+  echo "TESTFLIGHT_VERSION_CHECK=ok"
+  return 0
+}

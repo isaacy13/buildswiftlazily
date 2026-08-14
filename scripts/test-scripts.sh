@@ -325,6 +325,91 @@ if BSL_ARTIFACT_ROOT="$SWEEP" "$ROOT/scripts/ttl-sweep.sh" --job 'foo/../bar' >/
   exit 1
 fi
 
+# Pre-archive TestFlight CFBundleVersion check (source parse + ASC JSON, no network)
+mkdir -p "$TMP/ver/App.xcodeproj"
+cat > "$TMP/ver/App.xcodeproj/project.pbxproj" <<'PBX'
+// !$*UTF8*$!
+{
+	objects = {
+		AAAAAAAAAAAAAAA000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 1;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.demo.app;
+				PRODUCT_NAME = App;
+			};
+			name = Debug;
+		};
+		AAAAAAAAAAAAAAA000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CURRENT_PROJECT_VERSION = 7;
+				MARKETING_VERSION = 1.2.3;
+				PRODUCT_BUNDLE_IDENTIFIER = com.demo.app;
+				PRODUCT_NAME = App;
+			};
+			name = Release;
+		};
+		AAAAAAAAAAAAAAA000000010 /* Config list */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AAAAAAAAAAAAAAA000000001 /* Debug */,
+				AAAAAAAAAAAAAAA000000002 /* Release */,
+			);
+		};
+		AAAAAAAAAAAAAAA000000020 /* App */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AAAAAAAAAAAAAAA000000010;
+			name = App;
+			productType = "com.apple.product-type.application";
+		};
+	};
+}
+PBX
+ident=$(bsl_source_bundle_identity "$TMP/ver" App Release)
+echo "$ident" | grep -q $'com.demo.app\t7\t1.2.3'
+ident_dbg=$(bsl_source_bundle_identity "$TMP/ver" App Debug)
+echo "$ident_dbg" | grep -q $'com.demo.app\t1\t1.0.0'
+mkdir -p "$TMP/verplist"
+python3 - "$TMP/verplist/Info.plist" <<'PY'
+import plistlib, sys
+plistlib.dump({
+    "CFBundleIdentifier": "com.plist.app",
+    "CFBundleVersion": "9",
+    "CFBundleShortVersionString": "2.0",
+}, open(sys.argv[1], "wb"))
+PY
+ident_pl=$(bsl_source_bundle_identity "$TMP/verplist")
+echo "$ident_pl" | grep -q $'com.plist.app\t9\t2.0'
+
+dup_json='{"data":[{"type":"builds","id":"b1","attributes":{"version":"7","processingState":"VALID","uploadedDate":"2026-01-02T00:00:00Z"},"relationships":{"preReleaseVersion":{"data":{"type":"preReleaseVersions","id":"p1"}}}}],"included":[{"type":"preReleaseVersions","id":"p1","attributes":{"version":"1.2.3"}}]}'
+st=$(printf '%s\n' "$dup_json" | bsl_asc_parse_builds_status 7)
+echo "$st" | grep -q 'EXISTS=1'
+echo "$st" | grep -q 'LATEST_VERSION=7'
+echo "$st" | grep -q 'LATEST_SHORT=1.2.3'
+st0=$(printf '%s\n' "$dup_json" | bsl_asc_parse_builds_status 8)
+echo "$st0" | grep -q 'EXISTS=0'
+echo "$st0" | grep -q 'OLDER=0'
+st_old=$(printf '%s\n' "$dup_json" | bsl_asc_parse_builds_status 6)
+echo "$st_old" | grep -q 'OLDER=1'
+
+out_chk=$(BSL_DRY_RUN=1 "$ROOT/scripts/check-testflight-version.sh" --root "$TMP/ver" --scheme App --dry-run)
+echo "$out_chk" | grep -q 'CFBundleVersion: 7'
+echo "$out_chk" | grep -q 'TESTFLIGHT_VERSION_CHECK=dry-run'
+out_chk_ipa=$(BSL_DRY_RUN=1 "$ROOT/scripts/check-testflight-version.sh" --ipa "$TMP/mini.ipa" --dry-run)
+echo "$out_chk_ipa" | grep -q 'CFBundleVersion: 42'
+if "$ROOT/scripts/check-testflight-version.sh" --root "$TMP/ver" --project-path '../escape' --scheme App --dry-run >/dev/null 2>&1; then
+  echo "expected check-testflight-version to reject path traversal" >&2
+  exit 1
+fi
+out_skip=$(BSL_SKIP_ASC_VERSION_CHECK=1 "$ROOT/scripts/check-testflight-version.sh" --bundle-id com.demo.app --bundle-version 7)
+echo "$out_skip" | grep -q 'TESTFLIGHT_VERSION_CHECK=skip'
+mkdir -p "$TMP/emptyfix/Demo.xcodeproj"
+echo '// fixture' > "$TMP/emptyfix/Demo.xcodeproj/project.pbxproj"
+out_empty=$(BSL_DRY_RUN=1 "$ROOT/scripts/check-testflight-version.sh" --root "$TMP/emptyfix" --scheme GuideAI --dry-run)
+echo "$out_empty" | grep -q 'TESTFLIGHT_VERSION_CHECK=skip'
+
 # Deeper contract checks (path safety, manifest XML, TEAM_ID guard, etc.)
 "$ROOT/scripts/validate-macos.sh" >/dev/null
 

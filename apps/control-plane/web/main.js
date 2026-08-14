@@ -1440,7 +1440,7 @@ function renderProjects() {
     testflight:
       state.platform === "watchos"
         ? "Upload for TestFlight. Watch-only apps usually need an iOS container scheme. Check ASC Builds after upload — processing can take a while."
-        : "Upload to App Store Connect. Watch status in ASC → TestFlight → Builds (phone app hides Processing).",
+        : "Upload to App Store Connect. CFBundleVersion is checked against ASC before archive so a forgotten bump fails in seconds. Watch status in ASC → TestFlight → Builds.",
   };
   const watchOtaWarn =
     state.platform === "watchos" &&

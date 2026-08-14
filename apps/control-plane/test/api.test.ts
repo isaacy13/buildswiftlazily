@@ -144,6 +144,10 @@ test("local TestFlight dry-run job", async () => {
   const done = jobs.get(job.id)!;
   assert.equal(done.status, "succeeded", done.logs.join("\n"));
   assert.ok(done.testflightNote);
+  assert.ok(
+    done.logs.some((l) => /confirm CFBundleVersion|TESTFLIGHT_VERSION_CHECK/i.test(l)),
+    done.logs.join("\n"),
+  );
   delete process.env.BSL_DRY_RUN;
 });
 

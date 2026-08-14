@@ -198,7 +198,7 @@ App Store signing + ASC API (not Ad Hoc).
 3. `mkdir -p ~/.appstoreconnect/private_keys && mv AuthKey_XXX.p8 ~/.appstoreconnect/private_keys/`
 4. Ensure GuideAI (or your app) already exists in App Store Connect with a matching bundle id.
 5. Optional but recommended: set `BSL_ASC_APPLE_ID` to the numeric **Apple ID** on App Store Connect → your app → **App Information**. `altool --upload-package` will not deliver a build without it; this tooling looks it up via the ASC API when unset.
-6. Bump **CFBundleVersion** (build number) before each upload — duplicates are rejected.
+6. Bump **CFBundleVersion** (build number) before each upload — duplicates are rejected. TestFlight jobs now query App Store Connect **before** the Xcode archive and fail in seconds if that build number already exists.
 
 PWA → install method **TestFlight** → Build & upload.
 
@@ -251,7 +251,7 @@ launchctl load ~/Library/LaunchAgents/com.buildswiftlazily.control.plist
 | TestFlight empty after “upload” | If the log has `Expected apple ID argument is missing` / `TESTFLIGHT_UPLOAD=fail`, the IPA never reached ASC — set `BSL_ASC_APPLE_ID` (App Information → Apple ID) and re-run. Do not wait for processing. Older tooling could print `TESTFLIGHT_UPLOAD=ok` after that error. Also check **ASC → TestFlight → Builds**, not only the phone app. Ctrl+C on the Mac shell aborts upload. |
 | ASC build stuck Processing / Missing Compliance | Answer Export Compliance in App Store Connect; wait out processing (can exceed 1h). |
 | altool auth / missing AuthKey | `AuthKey_<BSL_ASC_KEY_ID>.p8` under `~/.appstoreconnect/private_keys/`; key needs App Manager+ |
-| Duplicate build rejected | Bump CFBundleVersion, rebuild, upload again |
+| Duplicate build rejected | Bump CFBundleVersion, commit, retry. TestFlight jobs check ASC before archive; a forgotten bump should fail immediately rather than after Xcode. |
 | Disk fills with old Xcode archives | Each job used to leave DerivedData under `artifacts/builds/<uuid>/`. Jobs now prune that on completion; `./scripts/ttl-sweep.sh` expires leftover OTA/work/builds after `BSL_ARTIFACT_TTL_DAYS` (default 7). Set `BSL_KEEP_BUILD_INTERMEDIATES=1` only while debugging. |
 | ASC email **ITMS-90018** (file extension must be .zip) | Rebuild with this tooling (archive aliases are copied before export) and bump **CFBundleVersion**. `altool --upload-package` needs bundle id/version **and** `--apple-id` (`BSL_ASC_APPLE_ID` or ASC API lookup). |
 | `Dangling bundle symlink` / Live Activity `.appex` after **ARCHIVE SUCCEEDED** | Xcode left `PlugIns/*.appex` as an alias to `UninstalledProducts`. The build copies that real extension from the xcarchive or DerivedData before export. If it still fails, the extension is not in the archived scheme (or was cleaned). |

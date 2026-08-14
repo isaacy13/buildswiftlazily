@@ -17,7 +17,7 @@ echo "== buildswiftlazily validate-macos =="
 
 echo
 echo "[scripts executable]"
-for s in doctor bootstrap start serve-control serve-ota build-ios install-direct upload-testflight ttl-sweep test-scripts smoke-api validate-macos; do
+for s in doctor bootstrap start serve-control serve-ota build-ios install-direct upload-testflight check-testflight-version ttl-sweep test-scripts smoke-api validate-macos; do
   if [[ -x "$ROOT/scripts/$s.sh" ]]; then
     pass "scripts/$s.sh"
   else
@@ -93,6 +93,10 @@ echo "$out" | grep -q -- '--bundle-version 7' && pass "upload-package includes -
 echo "$out" | grep -q -- '--bundle-short-version-string 1.0' && pass "upload-package includes short version" || bad "upload-package missing short version"
 out=$(BSL_DRY_RUN=1 "$ROOT/scripts/upload-testflight.sh" --ipa "$TMP/mini.ipa" --apple-id 1234567890 --dry-run)
 echo "$out" | grep -q -- '--apple-id 1234567890' && pass "upload-package includes --apple-id" || bad "upload-package missing --apple-id"
+echo "$out" | grep -q 'TESTFLIGHT_VERSION_CHECK=dry-run' && pass "upload-testflight dry-run version check" || bad "upload-testflight missing version check"
+out=$(BSL_DRY_RUN=1 "$ROOT/scripts/check-testflight-version.sh" --ipa "$TMP/mini.ipa" --dry-run)
+echo "$out" | grep -q 'CFBundleVersion: 7' && pass "check-testflight-version reads IPA" || bad "check-testflight-version IPA identity"
+echo "$out" | grep -q 'TESTFLIGHT_VERSION_CHECK=dry-run' && pass "check-testflight-version dry-run" || bad "check-testflight-version dry-run"
 # shellcheck source=lib.sh
 source "$ROOT/scripts/lib.sh"
 aid=$(printf '%s\n' '{"applications":[{"bundleID":"com.demo.app","appleID":1234567890}]}' | bsl_apple_id_from_list_apps com.demo.app)
