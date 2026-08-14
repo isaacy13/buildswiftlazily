@@ -22,8 +22,10 @@ Auth (App Store Connect API key — required):
     or BSL_ASC_KEY_PATH / API_PRIVATE_KEYS_DIR (directory or .p8 file)
 
 Uses xcrun altool --upload-package with the bundle metadata Apple requires.
-Missing --bundle-id / version / apple-id makes Transporter treat the IPA as a
-generic package and ASC emails ITMS-90018 (file extension must be .zip).
+--bundle-id, version, and --apple-id are required; without --apple-id altool
+prints ERROR 21 and may still exit 0 (a false TESTFLIGHT_UPLOAD=ok). Missing
+bundle metadata can also make Transporter treat the IPA as a generic package
+(ASC email ITMS-90018, file extension must be .zip).
 EOF
 }
 
@@ -136,6 +138,9 @@ fi
 if [[ -n "$KEY_ID" ]]; then
   echo "ASC key id: $KEY_ID"
 fi
+if [[ -n "$APPLE_ID" ]]; then
+  echo "ASC Apple ID: $APPLE_ID"
+fi
 if [[ -n "${API_PRIVATE_KEYS_DIR:-}" ]]; then
   echo "ASC keys dir: $API_PRIVATE_KEYS_DIR"
   if [[ -n "$KEY_ID" && ! -f "$API_PRIVATE_KEYS_DIR/AuthKey_${KEY_ID}.p8" ]]; then
@@ -197,8 +202,17 @@ run_altool() {
   xcrun altool "$@" "${AUTH[@]}" 2>&1 | tee "$logfile"
   status=${PIPESTATUS[0]}
   set -e
+  # xcrun/altool often exits 0 after printing ERROR: [altool …] (missing --apple-id is 21).
+  if grep -qiE 'ERROR:[[:space:]]*\[(altool|ContentDelivery)|Expected apple ID argument is missing' "$logfile"; then
+    if [[ "$status" -eq 0 ]]; then
+      echo "altool printed ERROR but exited 0 — treating as failure." >&2
+      status=1
+    fi
+  fi
   if [[ "$status" -ne 0 ]]; then
-    if grep -qiE 'Unable to authenticate|invalid.*key|JWT|401|403|Could not find.*AuthKey' "$logfile"; then
+    if grep -qiE 'Expected apple ID argument is missing' "$logfile"; then
+      echo "altool --upload-package requires --apple-id (numeric App Store Connect Apple ID). Set BSL_ASC_APPLE_ID." >&2
+    elif grep -qiE 'Unable to authenticate|invalid.*key|JWT|401|403|Could not find.*AuthKey' "$logfile"; then
       echo "ASC API auth failed — check BSL_ASC_KEY_ID / ISSUER_ID and AuthKey_${KEY_ID}.p8 (Access: App Manager or Admin)." >&2
     elif grep -qiE 'CFBundleVersion|redundant|already been uploaded|duplicate' "$logfile"; then
       echo "Likely duplicate build number — bump CFBundleVersion in Xcode / agvtool, rebuild, re-upload." >&2
@@ -213,23 +227,59 @@ run_altool() {
 
 if [[ -z "$APPLE_ID" ]]; then
   echo "Looking up App Store Connect Apple ID for ${BUNDLE_ID}…"
+  P8_FILE=""
+  if [[ -n "$KEY_PATH" && -f "${KEY_PATH/#\~/$HOME}" ]]; then
+    P8_FILE="${KEY_PATH/#\~/$HOME}"
+  elif [[ -n "${API_PRIVATE_KEYS_DIR:-}" && -f "$API_PRIVATE_KEYS_DIR/AuthKey_${KEY_ID}.p8" ]]; then
+    P8_FILE="$API_PRIVATE_KEYS_DIR/AuthKey_${KEY_ID}.p8"
+  fi
+  if [[ -n "$P8_FILE" ]]; then
+    API_ERR="$(mktemp)"
+    APPLE_ID="$(bsl_asc_api_apple_id "$BUNDLE_ID" "$KEY_ID" "$ISSUER_ID" "$P8_FILE" 2>"$API_ERR" | tr -d '[:space:]' || true)"
+    if [[ -n "$APPLE_ID" && "$APPLE_ID" =~ ^[0-9]{5,}$ ]]; then
+      echo "ASC Apple ID from App Store Connect API: $APPLE_ID"
+    else
+      APPLE_ID=""
+      if [[ -s "$API_ERR" ]]; then
+        echo "App Store Connect API Apple ID lookup failed:" >&2
+        cat "$API_ERR" >&2
+      fi
+    fi
+    rm -f "$API_ERR"
+  fi
+fi
+
+if [[ -z "$APPLE_ID" ]]; then
+  echo "Trying altool --list-apps for ${BUNDLE_ID}…"
   LIST_OUT="$(mktemp)"
   set +e
-  xcrun altool --list-apps --output-format json "${AUTH[@]}" >"$LIST_OUT" 2>"$LIST_OUT.err"
+  xcrun altool --list-apps --output-format json "${AUTH[@]}" >"$LIST_OUT" 2>&1
   LIST_STATUS=$?
   set -e
-  if [[ "$LIST_STATUS" -eq 0 ]]; then
-    APPLE_ID="$(bsl_apple_id_from_list_apps "$BUNDLE_ID" <"$LIST_OUT" || true)"
+  APPLE_ID="$(bsl_apple_id_from_list_apps "$BUNDLE_ID" <"$LIST_OUT" | tr -d '[:space:]' || true)"
+  if [[ -n "$APPLE_ID" && ! "$APPLE_ID" =~ ^[0-9]{5,}$ ]]; then
+    APPLE_ID=""
   fi
-  if [[ -z "$APPLE_ID" && -s "$LIST_OUT.err" ]]; then
-    APPLE_ID="$(bsl_apple_id_from_list_apps "$BUNDLE_ID" <"$LIST_OUT.err" || true)"
+  if [[ -z "$APPLE_ID" ]]; then
+    echo "altool --list-apps did not yield an Apple ID for ${BUNDLE_ID} (exit ${LIST_STATUS})." >&2
+    if [[ -s "$LIST_OUT" ]]; then
+      echo "altool --list-apps snippet:" >&2
+      head -c 600 "$LIST_OUT" >&2 || true
+      echo >&2
+    fi
   fi
-  rm -f "$LIST_OUT" "$LIST_OUT.err"
+  rm -f "$LIST_OUT"
   if [[ -n "$APPLE_ID" ]]; then
-    echo "ASC Apple ID: $APPLE_ID"
-  else
-    echo "Could not resolve --apple-id from altool --list-apps (set BSL_ASC_APPLE_ID). Continuing without it." >&2
+    echo "ASC Apple ID from altool --list-apps: $APPLE_ID"
   fi
+fi
+
+if [[ -z "$APPLE_ID" ]]; then
+  echo "Could not resolve --apple-id for ${BUNDLE_ID}." >&2
+  echo "altool --upload-package will not deliver the IPA to TestFlight without it (ERROR 21, often with exit 0)." >&2
+  echo "Set BSL_ASC_APPLE_ID to the numeric Apple ID: App Store Connect → your app → App Information → Apple ID." >&2
+  echo "TESTFLIGHT_UPLOAD=fail" >&2
+  exit 1
 fi
 
 if [[ "$SKIP_VALIDATE" != "1" ]]; then
@@ -245,6 +295,9 @@ pkg_args "$IPA"
 run_altool "${PKG_ARGS[@]}"
 UPLOAD_STATUS=$?
 if [[ "$UPLOAD_STATUS" -ne 0 && -n "$LAST_ALTOOL_LOG" ]] && \
+   grep -qiE 'Expected apple ID argument is missing' "$LAST_ALTOOL_LOG"; then
+  echo "--upload-package failed: missing --apple-id. Not retrying --upload-app." >&2
+elif [[ "$UPLOAD_STATUS" -ne 0 && -n "$LAST_ALTOOL_LOG" ]] && \
    grep -qiE 'ITMS-90018|extension must be \.zip|file extension must be' "$LAST_ALTOOL_LOG"; then
   ZIP="${IPA%.ipa}.zip"
   echo "--upload-package rejected .ipa extension; retrying with $ZIP (IPA is already a zip)…" >&2
@@ -254,17 +307,26 @@ if [[ "$UPLOAD_STATUS" -ne 0 && -n "$LAST_ALTOOL_LOG" ]] && \
   UPLOAD_STATUS=$?
   rm -f "$ZIP"
 fi
-if [[ "$UPLOAD_STATUS" -ne 0 ]]; then
+if [[ "$UPLOAD_STATUS" -ne 0 ]] && \
+   ! grep -qiE 'Expected apple ID argument is missing' "${LAST_ALTOOL_LOG:-/dev/null}"; then
   echo "--upload-package failed (exit $UPLOAD_STATUS); trying legacy --upload-app…" >&2
   run_altool --upload-app -f "$IPA" --type "$ALTOOL_TYPE" --show-progress
   UPLOAD_STATUS=$?
 fi
+if [[ "$UPLOAD_STATUS" -eq 0 && -n "$LAST_ALTOOL_LOG" ]]; then
+  if ! grep -qiE 'UPLOAD SUCCEEDED|No errors uploading|Delivery UUID' "$LAST_ALTOOL_LOG"; then
+    echo "altool exited 0 without UPLOAD SUCCEEDED / Delivery UUID — not treating as delivered." >&2
+    UPLOAD_STATUS=1
+  fi
+fi
 set -e
-rm -f "$LAST_ALTOOL_LOG"
 if [[ "$UPLOAD_STATUS" -ne 0 ]]; then
+  rm -f "$LAST_ALTOOL_LOG"
   echo "Upload failed (exit $UPLOAD_STATUS)." >&2
+  echo "TESTFLIGHT_UPLOAD=fail" >&2
   exit "$UPLOAD_STATUS"
 fi
+rm -f "$LAST_ALTOOL_LOG"
 
 echo "TESTFLIGHT_UPLOAD=ok"
 cat <<'EOF'
@@ -275,8 +337,9 @@ Next (this is where most “2 hour waits” actually are):
      — do NOT rely only on the TestFlight iPhone app; it hides Processing / Failed builds.
   2. Wait for Processing → Ready to Test (usually minutes; sometimes 1–2h).
   3. If stuck in Processing >2h or Missing Compliance: answer Export Compliance in ASC.
-  4. If the build never appears: upload did not succeed (or Ctrl+C killed it) — re-run
-     and confirm this script prints TESTFLIGHT_UPLOAD=ok.
+  4. If the build never appears: the upload did not succeed. Re-run and confirm
+     TESTFLIGHT_UPLOAD=ok AND no altool ERROR. Missing --apple-id (set BSL_ASC_APPLE_ID)
+     used to print ok without delivering the IPA.
   5. Duplicate CFBundleVersion uploads are rejected — bump the build number and retry.
   6. If ASC emails ITMS-90018 (extension must be .zip): the IPA had an aliased
      .app/.appex/.framework. Rebuild on this tooling so archive symlinks are copied

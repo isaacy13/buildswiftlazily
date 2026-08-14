@@ -120,6 +120,27 @@ ident=$(bsl_ipa_bundle_identity "$TMP/mini.ipa")
 echo "$ident" | grep -q $'com.demo.app\t42\t1.2.3'
 aid=$(printf '%s\n' '{"applications":[{"bundleID":"com.demo.app","appleId":1234567890}]}' | bsl_apple_id_from_list_apps com.demo.app)
 test "$aid" = "1234567890"
+aid=$(printf '%s\n' '{"applications":[{"bundleID":"com.demo.app","appleID":1234567890}]}' | bsl_apple_id_from_list_apps com.demo.app)
+test "$aid" = "1234567890"
+aid=$(printf '%s\n' '{"data":[{"type":"apps","id":"9876543210","attributes":{"bundleId":"com.demo.app"}}]}' | bsl_apple_id_from_list_apps com.demo.app)
+test "$aid" = "9876543210"
+aid=$(printf '%s\n' $'Running altool...\n{"applications":[{"bundleID":"com.demo.app","appleID":555666777}]}\nDone' | bsl_apple_id_from_list_apps com.demo.app)
+test "$aid" = "555666777"
+out3c=$(BSL_DRY_RUN=1 "$ROOT/scripts/upload-testflight.sh" --ipa "$TMP/mini.ipa" --apple-id 1234567890 --dry-run)
+echo "$out3c" | grep -q -- '--apple-id 1234567890'
+if command -v openssl >/dev/null 2>&1 && \
+   openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$TMP/AuthKey_TESTKEYID.p8" 2>/dev/null; then
+  tok=$(bsl_asc_jwt TESTKEYID 00000000-0000-0000-0000-000000000000 "$TMP/AuthKey_TESTKEYID.p8")
+  python3 - "$tok" <<'PY'
+import base64, sys
+tok = sys.argv[1]
+parts = tok.split(".")
+assert len(parts) == 3, tok
+pad = "=" * (-len(parts[2]) % 4)
+raw = base64.urlsafe_b64decode(parts[2] + pad)
+assert len(raw) == 64, len(raw)
+PY
+fi
 if bsl_assert_ipa_payload "$OUT/App.ipa" >/dev/null 2>&1; then
   echo "expected non-zip IPA to fail payload check" >&2
   exit 1
