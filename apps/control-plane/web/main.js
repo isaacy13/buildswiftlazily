@@ -798,6 +798,26 @@ function closeCombos({ except } = {}) {
   return changed;
 }
 
+function isCoarsePointer() {
+  return Boolean(window.matchMedia?.("(hover: none)").matches);
+}
+
+function bindComboOutsideClose() {
+  if (bindComboOutsideClose.bound) return;
+  bindComboOutsideClose.bound = true;
+  // Use click, not pointerdown: a scroll gesture must not dismiss the list,
+  // and rebuilding the DOM mid-pointerdown retargets the tap onto whatever
+  // replaced the picker.
+  document.addEventListener(
+    "click",
+    (e) => {
+      if (e.target?.closest?.("[data-combo]")) return;
+      if (closeCombos()) render();
+    },
+    true,
+  );
+}
+
 function renderCombobox({
   id,
   label,
@@ -865,7 +885,7 @@ function renderCombobox({
               .map((it, i) => {
                 const selected = i === hi;
                 const currentItem = it.id === current;
-                return `<button type="button" class="combo-option ${
+                return `<div class="combo-option ${
                   selected ? "is-active" : ""
                 } ${currentItem ? "is-current" : ""}" role="option" aria-selected="${
                   selected ? "true" : "false"
@@ -880,18 +900,18 @@ function renderCombobox({
                   ${(it.badges || [])
                     .map((b) => `<span class="badge">${escapeHtml(b)}</span>`)
                     .join("")}
-                </button>`;
+                </div>`;
               })
               .join("")}
             ${
               custom
-                ? `<button type="button" class="combo-option combo-custom ${
+                ? `<div class="combo-option combo-custom ${
                     hi === items.length ? "is-active" : ""
                   }" role="option" data-combo-pick="${escapeAttr(id)}" data-combo-id="${escapeAttr(
                     typed,
                   )}" data-combo-custom="1">
                     Use <strong>${escapeHtml(typed)}</strong>
-                  </button>`
+                  </div>`
                 : ""
             }
             ${
@@ -931,6 +951,8 @@ async function onSelectBranch(name) {
 function bindCombobox(view, { id, openKey, queryKey, highlightKey, onSelect }) {
   const input = view.querySelector(`#${id}Query`);
   if (!input) return;
+  const list = view.querySelector(`#${id}List`);
+  let listPointer = false;
 
   input.addEventListener("focus", () => {
     closeCombos({ except: id });
@@ -998,6 +1020,12 @@ function bindCombobox(view, { id, openKey, queryKey, highlightKey, onSelect }) {
     setTimeout(() => {
       if (document.activeElement?.id === inputId) return;
       if (!state[openKey]) return;
+      // Finger is on the list (scroll or tap) — don't tear it down.
+      if (listPointer) return;
+      // Mobile: dismissing the keyboard / tapping the list blurs the input.
+      // Keep the picker open and close via outside tap, Escape, or a pick.
+      if (isCoarsePointer()) return;
+      if (document.activeElement?.closest?.(`[data-combo="${id}"]`)) return;
       state[openKey] = false;
       state[queryKey] = "";
       if (state.focusField?.id === inputId) state.focusField = null;
@@ -1005,10 +1033,31 @@ function bindCombobox(view, { id, openKey, queryKey, highlightKey, onSelect }) {
     }, 180);
   });
 
-  view.querySelectorAll(`[data-combo-pick="${id}"]`).forEach((btn) => {
-    btn.addEventListener("pointerdown", (e) => {
+  if (list) {
+    list.addEventListener("pointerdown", () => {
+      listPointer = true;
+    });
+    list.addEventListener(
+      "touchmove",
+      (e) => {
+        // Only trap the gesture when this list is the thing scrolling
+        // (overlay). In-flow mobile lists let #view scroll instead.
+        if (list.scrollHeight > list.clientHeight + 1) e.stopPropagation();
+      },
+      { passive: true },
+    );
+  }
+
+  view.querySelectorAll(`[data-combo-pick="${id}"]`).forEach((opt) => {
+    opt.addEventListener("pointerdown", (e) => {
+      listPointer = true;
+      // Keep the search field focused on mouse/pen so typing continues.
+      // Do not preventDefault on touch — that blocks scrolling the list.
+      if (e.pointerType === "mouse" || e.pointerType === "pen") e.preventDefault();
+    });
+    opt.addEventListener("click", (e) => {
       e.preventDefault();
-      const pick = btn.getAttribute("data-combo-id");
+      const pick = opt.getAttribute("data-combo-id");
       if (pick) onSelect(pick);
     });
   });
@@ -1781,6 +1830,7 @@ function renderStatus() {
 }
 
 function renderShellOnce() {
+  bindComboOutsideClose();
   if (app.querySelector("nav.tabs") && app.querySelector("#view")) return;
 
   app.innerHTML = `
