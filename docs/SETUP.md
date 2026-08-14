@@ -105,7 +105,7 @@ If a dialog still appears **once** after prepare, click **Always Allow** with a 
 | `No signing certificate` / export fail | Sign into Xcode Accounts; set `BSL_TEAM_ID`; ensure Distribution identity in keychain |
 | Keychain password / “codesign wants to…” while you’re on the couch | §1e — `./scripts/prepare-keychain.sh` (+ optional `BSL_KEYCHAIN_PASSWORD`) |
 | `errSecInteractionNotAllowed` / `-25308` / User interaction is not allowed | Keychain locked or ACL not prepared → §1e |
-| `Embed Foundation Extensions` / `PhaseScriptExecution` archive failure | App extension embed phase ordered after Thin Binary / Run Scripts, or codesign sandbox. `build-ios.sh` reorders the phase + sets `ENABLE_USER_SCRIPT_SANDBOXING=NO` and uses a per-build DerivedData. If it still fails: Xcode → Target → **Build Phases** → drag **Embed Foundation Extensions** above Thin Binary / other Run Scripts; confirm every `.appex` target uses the same Team (automatic signing); commit the `pbxproj`. |
+| `Embed Foundation Extensions` / `PhaseScriptExecution` archive failure | App extension embed phase ordered after Thin Binary / Run Scripts (or *before* Sources), or codesign sandbox. Each build rewrites the checkout: Embed is placed after Resources and before Thin Binary, and `ENABLE_USER_SCRIPT_SANDBOXING=YES` is flipped to `NO`. If it still fails: every `.appex` target must use the same Team (automatic signing); run `./scripts/prepare-keychain.sh` if codesign is blocked. |
 
 ## Platforms (iOS + watchOS)
 

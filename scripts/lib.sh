@@ -84,10 +84,11 @@ bsl_unlock_keychain_for_build() {
   return 0
 }
 
-# Move "Embed Foundation Extensions" / "Embed App Extensions" earlier in each
-# target's buildPhases list (after [CP] Check Pods Manifest.lock when present).
-# Fixes common Xcode 15+ archive failures when Thin Binary / CocoaPods scripts
-# run before extensions are embedded. Safe no-op when no matching phase exists.
+# Move "Embed Foundation Extensions" / "Embed App Extensions" to after
+# Sources/Frameworks/Resources and before Thin Binary / CocoaPods / Run Scripts.
+# Xcode 15+ often appends the embed phase *after* Thin Binary, which fails archive.
+# Putting it *first* (before Sources) is also wrong — the .app does not exist yet.
+# Safe no-op when no matching phase exists or the order is already correct.
 bsl_fix_embed_extension_phases() {
   local root="$1"
   [[ -d "$root" ]] || return 0
@@ -95,10 +96,20 @@ bsl_fix_embed_extension_phases() {
 import pathlib, re, sys
 
 root = pathlib.Path(sys.argv[1])
-embed_re = re.compile(r"Embed (?:Foundation|App) Extensions", re.I)
-keep_front_re = re.compile(r"\[CP\] Check Pods Manifest\.lock", re.I)
+embed_re = re.compile(
+    r"Embed (?:Foundation|App|ExtensionKit) Extensions|"
+    r"Embed Watch Content|Embed App Clips",
+    re.I,
+)
+# Phases that must run before the .app exists to copy PlugIns into.
+early_re = re.compile(
+    r"^(?:Sources|Headers|Frameworks|Resources|Dependencies|"
+    r"Compile Sources|Link Binary With Libraries|Copy Bundle Resources|"
+    r"\[CP\] Check Pods Manifest\.lock)$",
+    re.I,
+)
 phase_line_re = re.compile(
-    r"^(\s*)([A-F0-9]{24})\s*/\*\s*(.*?)\s*\*/\s*,\s*$"
+    r"^(\s*)([A-Fa-f0-9]{24})\s*/\*\s*(.*?)\s*\*/\s*,\s*$"
 )
 
 changed_files = 0
@@ -122,23 +133,28 @@ for pbx in root.rglob("project.pbxproj"):
                     i += 1
                     break
                 i += 1
-            body_idxs = []
+            body = []
             for bi, bl in enumerate(block):
                 m = phase_line_re.match(bl.rstrip("\n"))
                 if m:
-                    body_idxs.append((bi, m.group(1), m.group(2), m.group(3)))
-            embeds = [t for t in body_idxs if embed_re.search(t[3])]
+                    body.append((bi, m.group(1), m.group(2), m.group(3)))
+            embeds = [t for t in body if embed_re.search(t[3])]
             if embeds:
-                front = [t for t in body_idxs if keep_front_re.search(t[3])]
-                rest = [
+                embed_ids = {t[2] for t in embeds}
+                early = [
                     t
-                    for t in body_idxs
-                    if t not in embeds and t not in front
+                    for t in body
+                    if t[2] not in embed_ids and early_re.match(t[3].strip())
                 ]
-                new_order = front + embeds + rest
-                if [t[2] for t in new_order] != [t[2] for t in body_idxs]:
-                    # Rewrite only the ID lines; keep the opening/closing lines.
-                    id_bis = {t[0] for t in body_idxs}
+                late = [
+                    t
+                    for t in body
+                    if t[2] not in embed_ids and t not in early
+                ]
+                # Keep relative order inside each bucket.
+                new_order = early + embeds + late
+                if [t[2] for t in new_order] != [t[2] for t in body]:
+                    id_bis = {t[0] for t in body}
                     new_block = []
                     order_iter = iter(new_order)
                     for bi, bl in enumerate(block):
@@ -160,6 +176,33 @@ for pbx in root.rglob("project.pbxproj"):
 
 if changed_files == 0:
     print("No Embed Foundation/App Extensions phase reorder needed")
+PY
+}
+
+# CocoaPods / Flutter / extension-embed Run Scripts fail archive when Xcode 15+
+# sandboxes them (can't codesign or rsync into the .app). Flip the project
+# setting so the override is not only a command-line build setting.
+bsl_disable_user_script_sandboxing() {
+  local root="$1"
+  [[ -d "$root" ]] || return 0
+  python3 - "$root" <<'PY'
+import pathlib, re, sys
+
+root = pathlib.Path(sys.argv[1])
+pat = re.compile(r"ENABLE_USER_SCRIPT_SANDBOXING\s*=\s*YES")
+changed = 0
+for pbx in root.rglob("project.pbxproj"):
+    parts_l = {x.lower() for x in pbx.parts}
+    if "pods" in parts_l or ".build" in parts_l or "sourcedpackages" in parts_l:
+        continue
+    original = pbx.read_text(encoding="utf-8", errors="replace")
+    new, n = pat.subn("ENABLE_USER_SCRIPT_SANDBOXING = NO", original)
+    if n:
+        pbx.write_text(new, encoding="utf-8")
+        changed += 1
+        print(f"Disabled ENABLE_USER_SCRIPT_SANDBOXING in {pbx} ({n} setting(s))")
+if changed == 0:
+    print("No ENABLE_USER_SCRIPT_SANDBOXING=YES settings to clear")
 PY
 }
 
