@@ -128,6 +128,18 @@ aid=$(printf '%s\n' $'Running altool...\n{"applications":[{"bundleID":"com.demo.
 test "$aid" = "555666777"
 out3c=$(BSL_DRY_RUN=1 "$ROOT/scripts/upload-testflight.sh" --ipa "$TMP/mini.ipa" --apple-id 1234567890 --dry-run)
 echo "$out3c" | grep -q -- '--apple-id 1234567890'
+echo "$out3c" | grep -q 'TESTFLIGHT_DISTRIBUTE=dry-run'
+echo "$out3c" | grep -q 'Automatic Distribution'
+groups_json='[{"id":"g1","name":"App Store Connect Users","isInternalGroup":true,"hasAccessToAllBuilds":false},{"id":"g2","name":"Friends","isInternalGroup":false,"hasAccessToAllBuilds":false}]'
+sel=$(printf '%s\n' "$groups_json" | bsl_asc_select_beta_groups internal)
+echo "$sel" | grep -q $'g1\tApp Store Connect Users\tinternal'
+if echo "$sel" | grep -q Friends; then echo "internal spec leaked external group" >&2; exit 1; fi
+sel=$(printf '%s\n' "$groups_json" | bsl_asc_select_beta_groups Friends)
+echo "$sel" | grep -q $'g2\tFriends\texternal'
+sel=$(printf '%s\n' "$groups_json" | bsl_asc_select_beta_groups none)
+[[ -z "$sel" ]]
+out_skip=$(BSL_DRY_RUN=1 "$ROOT/scripts/upload-testflight.sh" --ipa "$TMP/mini.ipa" --skip-distribute --dry-run)
+echo "$out_skip" | grep -q 'TESTFLIGHT_DISTRIBUTE=skipped'
 if command -v openssl >/dev/null 2>&1 && \
    openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$TMP/AuthKey_TESTKEYID.p8" 2>/dev/null; then
   tok=$(bsl_asc_jwt TESTKEYID 00000000-0000-0000-0000-000000000000 "$TMP/AuthKey_TESTKEYID.p8")

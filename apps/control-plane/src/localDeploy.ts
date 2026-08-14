@@ -797,14 +797,35 @@ export async function runLocalDeploy(
         path.join(REPO_ROOT, "scripts/upload-testflight.sh"),
         tfArgs,
       );
-      const uploaded = /TESTFLIGHT_UPLOAD=ok/.test(`${tf.stdout}\n${tf.stderr}`);
-      jobs.patch(jobId, {
-        testflightNote: dry
-          ? "DRY_RUN: would upload to App Store Connect / TestFlight."
-          : uploaded
-            ? "Upload accepted. Check App Store Connect → TestFlight → Builds (not only the phone app). Processing is often minutes; Missing Compliance can stall for hours."
-            : "Upload finished without TESTFLIGHT_UPLOAD=ok — check the log. If you Ctrl+C’d the Mac shell, re-run; the upload was likely aborted.",
-      });
+      const tfOut = `${tf.stdout}\n${tf.stderr}`;
+      const uploaded = /TESTFLIGHT_UPLOAD=ok/.test(tfOut);
+      const distOk = /TESTFLIGHT_DISTRIBUTE=ok/.test(tfOut);
+      const distSkip = /TESTFLIGHT_DISTRIBUTE=skipped/.test(tfOut);
+      const distTimeout = /TESTFLIGHT_DISTRIBUTE=timeout/.test(tfOut);
+      const distGroups = tfOut.match(/^TESTFLIGHT_DISTRIBUTE_GROUPS=(.+)$/m)?.[1]?.trim();
+      let testflightNote: string;
+      if (dry) {
+        testflightNote =
+          "DRY_RUN: would upload to App Store Connect / TestFlight.";
+      } else if (!uploaded) {
+        testflightNote =
+          "Upload finished without TESTFLIGHT_UPLOAD=ok — check the log. If you Ctrl+C’d the Mac shell, re-run; the upload was likely aborted.";
+      } else if (distTimeout) {
+        testflightNote =
+          "Upload accepted, but processing did not finish in time to assign testers. When the build is Ready to Test, run upload-testflight.sh --assign-only or add groups in App Store Connect.";
+      } else if (distOk && distGroups) {
+        testflightNote = `Upload accepted. TestFlight groups: ${distGroups}. Processing still happens on Apple's side; Missing Compliance (Export Compliance) can stall testers until answered.`;
+      } else if (distOk) {
+        testflightNote =
+          "Upload accepted. Internal TestFlight groups were set to Automatic Distribution so you should not need the Groups + button on every build.";
+      } else if (distSkip) {
+        testflightNote =
+          "Upload accepted. Check App Store Connect → TestFlight → Builds. Create an Internal group, add yourself, and enable Automatic Distribution so you don't assign testers on every build.";
+      } else {
+        testflightNote =
+          "Upload accepted. Check App Store Connect → TestFlight → Builds (not only the phone app). Processing is often minutes; Missing Compliance can stall for hours.";
+      }
+      jobs.patch(jobId, { testflightNote });
       phase(
         dry
           ? "TestFlight dry-run finished"

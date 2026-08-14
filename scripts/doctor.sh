@@ -168,6 +168,17 @@ if [[ -n "${BSL_ASC_KEY_ID:-}${ASC_KEY_ID:-}" && -n "${BSL_ASC_ISSUER_ID:-}${ASC
   else
     note "BSL_ASC_APPLE_ID unset — upload looks it up; set the numeric App Information Apple ID if TestFlight stays empty"
   fi
+  AUTO_DIST="$(printf '%s' "${BSL_ASC_AUTO_DISTRIBUTE:-1}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$AUTO_DIST" == "0" || "$AUTO_DIST" == "false" || "$AUTO_DIST" == "off" || "$AUTO_DIST" == "none" ]]; then
+    note "BSL_ASC_AUTO_DISTRIBUTE=0 — you must assign TestFlight groups in App Store Connect (or set BSL_ASC_BETA_GROUPS)"
+  else
+    pass "TestFlight Automatic Distribution will be enabled on internal groups after upload"
+  fi
+  if [[ -n "${BSL_ASC_BETA_GROUPS:-}" ]]; then
+    pass "BSL_ASC_BETA_GROUPS=${BSL_ASC_BETA_GROUPS} (wait/assign this build after processing)"
+  else
+    note "BSL_ASC_BETA_GROUPS unset — internal auto-distribute is enough if you created an Internal group; set =internal to also attach this build"
+  fi
 else
   note "TestFlight ASC API key not configured (optional)"
 fi

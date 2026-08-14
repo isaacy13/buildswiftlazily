@@ -731,3 +731,22 @@ PY
 )" || return 1
   printf '%s\n' "$json" | bsl_apple_id_from_list_apps "$bundle_id"
 }
+
+# Match TestFlight beta groups from JSON (ASC resource or {id,name,isInternalGroup}).
+# Usage: bsl_asc_select_beta_groups <spec>  (JSON on stdin)
+# spec: internal | * | none | comma-separated names
+bsl_asc_select_beta_groups() {
+  local spec="${1:-internal}"
+  local helper
+  helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/asc_distribute.py"
+  python3 "$helper" --select-groups --groups "$spec"
+}
+
+# After an IPA is in App Store Connect: enable internal auto-distribution and
+# optionally wait/assign groups + export compliance.
+# Usage: bsl_asc_distribute_testflight --bundle-id ID --bundle-version VER [options]
+bsl_asc_distribute_testflight() {
+  local helper
+  helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/asc_distribute.py"
+  python3 "$helper" "$@"
+}

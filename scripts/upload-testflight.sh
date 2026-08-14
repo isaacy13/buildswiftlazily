@@ -12,7 +12,12 @@ Options:
   --bundle-version VER     CFBundleVersion (read from IPA when omitted)
   --bundle-short-version V CFBundleShortVersionString (read from IPA when omitted)
   --apple-id ID            App Store Connect numeric Apple ID (or BSL_ASC_APPLE_ID)
+  --groups SPEC            TestFlight groups to assign after processing
+                           (internal | * | none | comma-separated names)
+                           or BSL_ASC_BETA_GROUPS
   --skip-validate          Upload without --validate-app first
+  --skip-distribute        Do not touch TestFlight groups / export compliance
+  --assign-only            Skip altool; wait/assign an already-uploaded build
   --dry-run
 
 Auth (App Store Connect API key — required):
@@ -32,11 +37,14 @@ EOF
 IPA=""
 PLATFORM="ios"
 SKIP_VALIDATE=0
+SKIP_DISTRIBUTE=0
+ASSIGN_ONLY=0
 DRY_RUN="${BSL_DRY_RUN:-0}"
 BUNDLE_ID=""
 BUNDLE_VERSION=""
 BUNDLE_SHORT=""
 APPLE_ID="${BSL_ASC_APPLE_ID:-${ASC_APPLE_ID:-}}"
+GROUPS="${BSL_ASC_BETA_GROUPS:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,15 +54,25 @@ while [[ $# -gt 0 ]]; do
     --bundle-version) BUNDLE_VERSION="$2"; shift 2 ;;
     --bundle-short-version) BUNDLE_SHORT="$2"; shift 2 ;;
     --apple-id) APPLE_ID="$2"; shift 2 ;;
+    --groups) GROUPS="$2"; shift 2 ;;
     --skip-validate) SKIP_VALIDATE=1; shift ;;
+    --skip-distribute) SKIP_DISTRIBUTE=1; shift ;;
+    --assign-only) ASSIGN_ONLY=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown: $1" >&2; usage; exit 2 ;;
   esac
 done
 
-[[ -n "$IPA" ]] || { usage; exit 2; }
-[[ -f "$IPA" ]] || { echo "IPA not found: $IPA" >&2; exit 1; }
+if [[ "$ASSIGN_ONLY" == "1" ]]; then
+  if [[ -n "$IPA" && ! -f "$IPA" ]]; then
+    echo "IPA not found: $IPA" >&2
+    exit 1
+  fi
+else
+  [[ -n "$IPA" ]] || { usage; exit 2; }
+  [[ -f "$IPA" ]] || { echo "IPA not found: $IPA" >&2; exit 1; }
+fi
 
 SCRIPT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=lib.sh
@@ -69,7 +87,7 @@ if [[ "$PLATFORM" == "macos" || "$PLATFORM" == "appletvos" || "$PLATFORM" == "vi
 fi
 
 # Fill bundle identity from the IPA when the caller didn't pass it.
-if [[ -z "$BUNDLE_ID" || -z "$BUNDLE_VERSION" || -z "$BUNDLE_SHORT" ]]; then
+if [[ -n "$IPA" && ( -z "$BUNDLE_ID" || -z "$BUNDLE_VERSION" || -z "$BUNDLE_SHORT" ) ]]; then
   IDENT="$(bsl_ipa_bundle_identity "$IPA" || true)"
   if [[ -n "$IDENT" ]]; then
     IFS=$'\t' read -r IPA_BID IPA_VER IPA_SHORT <<<"$IDENT"
@@ -79,7 +97,7 @@ if [[ -z "$BUNDLE_ID" || -z "$BUNDLE_VERSION" || -z "$BUNDLE_SHORT" ]]; then
   fi
 fi
 
-if [[ "$DRY_RUN" != "1" ]]; then
+if [[ "$DRY_RUN" != "1" && "$ASSIGN_ONLY" != "1" ]]; then
   bsl_assert_ipa_payload "$IPA" || {
     echo "IPA is not a valid App Store zip (ITMS-90018). Rebuild with TestFlight mode so archive symlinks are materialized." >&2
     exit 1
@@ -122,10 +140,11 @@ if KEYS_DIR="$(resolve_keys_dir "$KEY_PATH")"; then
   export API_PRIVATE_KEYS_DIR="$KEYS_DIR"
 fi
 
-IPA_SIZE="$(wc -c <"$IPA" | tr -d ' ')"
-IPA_MB="$(awk -v b="$IPA_SIZE" 'BEGIN { printf "%.1f", b/1024/1024 }')"
-
-echo "IPA: $IPA (${IPA_MB} MiB)"
+if [[ -n "$IPA" ]]; then
+  IPA_SIZE="$(wc -c <"$IPA" | tr -d ' ')"
+  IPA_MB="$(awk -v b="$IPA_SIZE" 'BEGIN { printf "%.1f", b/1024/1024 }')"
+  echo "IPA: $IPA (${IPA_MB} MiB)"
+fi
 if [[ -n "$BUNDLE_ID" ]]; then
   echo "Bundle id: $BUNDLE_ID"
 fi
@@ -160,15 +179,57 @@ pkg_args() {
   PKG_ARGS+=(--show-progress)
 }
 
+AUTO_DIST_RAW="$(printf '%s' "${BSL_ASC_AUTO_DISTRIBUTE:-1}" | tr '[:upper:]' '[:lower:]')"
+AUTO_DIST=1
+if [[ "$SKIP_DISTRIBUTE" == "1" || "$AUTO_DIST_RAW" == "0" || "$AUTO_DIST_RAW" == "false" || "$AUTO_DIST_RAW" == "no" || "$AUTO_DIST_RAW" == "off" || "$AUTO_DIST_RAW" == "none" ]]; then
+  AUTO_DIST=0
+fi
+ENCRYPTION="${BSL_ASC_USES_NON_EXEMPT_ENCRYPTION:-}"
+PROCESS_TIMEOUT="${BSL_ASC_PROCESS_TIMEOUT:-900}"
+PROCESS_POLL="${BSL_ASC_PROCESS_POLL:-20}"
+P8_FILE=""
+if [[ -n "$KEY_PATH" && -f "${KEY_PATH/#\~/$HOME}" ]]; then
+  P8_FILE="${KEY_PATH/#\~/$HOME}"
+elif [[ -n "${API_PRIVATE_KEYS_DIR:-}" && -n "$KEY_ID" && -f "$API_PRIVATE_KEYS_DIR/AuthKey_${KEY_ID}.p8" ]]; then
+  P8_FILE="$API_PRIVATE_KEYS_DIR/AuthKey_${KEY_ID}.p8"
+fi
+
+run_distribute() {
+  local dist_args=()
+  if [[ "$SKIP_DISTRIBUTE" == "1" ]]; then
+    echo "TESTFLIGHT_DISTRIBUTE=skipped"
+    echo "Skipped TestFlight group assignment (--skip-distribute)."
+    return 0
+  fi
+  dist_args=(
+    --bundle-id "$BUNDLE_ID"
+    --bundle-version "$BUNDLE_VERSION"
+    --bundle-short-version "$BUNDLE_SHORT"
+    --groups "$GROUPS"
+    --encryption "$ENCRYPTION"
+    --timeout "$PROCESS_TIMEOUT"
+    --poll "$PROCESS_POLL"
+  )
+  [[ -n "$KEY_ID" ]] && dist_args+=(--key-id "$KEY_ID")
+  [[ -n "$ISSUER_ID" ]] && dist_args+=(--issuer-id "$ISSUER_ID")
+  [[ -n "$P8_FILE" ]] && dist_args+=(--p8 "$P8_FILE")
+  [[ "$AUTO_DIST" == "1" ]] && dist_args+=(--auto-distribute)
+  [[ "$DRY_RUN" == "1" ]] && dist_args+=(--dry-run)
+  bsl_asc_distribute_testflight "${dist_args[@]}"
+}
+
 if [[ "$DRY_RUN" == "1" ]]; then
-  echo "DRY_RUN: xcrun altool --validate-app -f $IPA --type $ALTOOL_TYPE --apiKey ${KEY_ID:-KEY} --apiIssuer ${ISSUER_ID:-ISSUER}"
-  pkg_args "$IPA"
-  echo -n "DRY_RUN: xcrun altool"
-  for a in "${PKG_ARGS[@]}"; do
-    printf ' %s' "$a"
-  done
-  echo " --apiKey ${KEY_ID:-KEY} --apiIssuer ${ISSUER_ID:-ISSUER}"
-  echo "TESTFLIGHT_UPLOAD=dry-run"
+  if [[ "$ASSIGN_ONLY" != "1" ]]; then
+    echo "DRY_RUN: xcrun altool --validate-app -f ${IPA:-IPA} --type $ALTOOL_TYPE --apiKey ${KEY_ID:-KEY} --apiIssuer ${ISSUER_ID:-ISSUER}"
+    pkg_args "${IPA:-/tmp/App.ipa}"
+    echo -n "DRY_RUN: xcrun altool"
+    for a in "${PKG_ARGS[@]}"; do
+      printf ' %s' "$a"
+    done
+    echo " --apiKey ${KEY_ID:-KEY} --apiIssuer ${ISSUER_ID:-ISSUER}"
+    echo "TESTFLIGHT_UPLOAD=dry-run"
+  fi
+  run_distribute || true
   exit 0
 fi
 
@@ -182,7 +243,7 @@ if [[ -z "${API_PRIVATE_KEYS_DIR:-}" ]]; then
   exit 1
 fi
 
-if [[ -z "$BUNDLE_ID" || -z "$BUNDLE_VERSION" || -z "$BUNDLE_SHORT" ]]; then
+if [[ -z "$BUNDLE_ID" || -z "$BUNDLE_VERSION" || ( "$ASSIGN_ONLY" != "1" && -z "$BUNDLE_SHORT" ) ]]; then
   echo "Could not read CFBundleIdentifier / CFBundleVersion / CFBundleShortVersionString from the IPA." >&2
   echo "Pass --bundle-id / --bundle-version / --bundle-short-version (ITMS-90018 if --upload-package is missing these)." >&2
   exit 1
@@ -225,13 +286,14 @@ run_altool() {
   return "$status"
 }
 
-if [[ -z "$APPLE_ID" ]]; then
+if [[ -z "$APPLE_ID" && "$ASSIGN_ONLY" != "1" ]]; then
   echo "Looking up App Store Connect Apple ID for ${BUNDLE_ID}…"
-  P8_FILE=""
-  if [[ -n "$KEY_PATH" && -f "${KEY_PATH/#\~/$HOME}" ]]; then
-    P8_FILE="${KEY_PATH/#\~/$HOME}"
-  elif [[ -n "${API_PRIVATE_KEYS_DIR:-}" && -f "$API_PRIVATE_KEYS_DIR/AuthKey_${KEY_ID}.p8" ]]; then
-    P8_FILE="$API_PRIVATE_KEYS_DIR/AuthKey_${KEY_ID}.p8"
+  if [[ -z "$P8_FILE" ]]; then
+    if [[ -n "$KEY_PATH" && -f "${KEY_PATH/#\~/$HOME}" ]]; then
+      P8_FILE="${KEY_PATH/#\~/$HOME}"
+    elif [[ -n "${API_PRIVATE_KEYS_DIR:-}" && -f "$API_PRIVATE_KEYS_DIR/AuthKey_${KEY_ID}.p8" ]]; then
+      P8_FILE="$API_PRIVATE_KEYS_DIR/AuthKey_${KEY_ID}.p8"
+    fi
   fi
   if [[ -n "$P8_FILE" ]]; then
     API_ERR="$(mktemp)"
@@ -247,6 +309,19 @@ if [[ -z "$APPLE_ID" ]]; then
     fi
     rm -f "$API_ERR"
   fi
+fi
+
+if [[ "$ASSIGN_ONLY" == "1" ]]; then
+  echo "Assigning an already-uploaded TestFlight build (no altool upload)…"
+  set +e
+  run_distribute
+  DIST_STATUS=$?
+  set -e
+  if [[ "$DIST_STATUS" -ne 0 ]]; then
+    echo "TESTFLIGHT_DISTRIBUTE=fail" >&2
+    exit "$DIST_STATUS"
+  fi
+  exit 0
 fi
 
 if [[ -z "$APPLE_ID" ]]; then
@@ -336,7 +411,8 @@ Next (this is where most “2 hour waits” actually are):
   1. https://appstoreconnect.apple.com → your app → TestFlight → iOS builds
      — do NOT rely only on the TestFlight iPhone app; it hides Processing / Failed builds.
   2. Wait for Processing → Ready to Test (usually minutes; sometimes 1–2h).
-  3. If stuck in Processing >2h or Missing Compliance: answer Export Compliance in ASC.
+  3. If stuck in Processing >2h or Missing Compliance: answer Export Compliance in ASC,
+     or set ITSAppUsesNonExemptEncryption in Info.plist / BSL_ASC_USES_NON_EXEMPT_ENCRYPTION=false.
   4. If the build never appears: the upload did not succeed. Re-run and confirm
      TESTFLIGHT_UPLOAD=ok AND no altool ERROR. Missing --apple-id (set BSL_ASC_APPLE_ID)
      used to print ok without delivering the IPA.
@@ -344,4 +420,17 @@ Next (this is where most “2 hour waits” actually are):
   6. If ASC emails ITMS-90018 (extension must be .zip): the IPA had an aliased
      .app/.appex/.framework. Rebuild on this tooling so archive symlinks are copied
      before export, then bump CFBundleVersion and upload again.
+  7. Testers: this script enables Automatic Distribution on internal groups so you
+     should not need the Groups + button on every build. Set BSL_ASC_BETA_GROUPS=internal
+     to also wait and attach this build; use --assign-only to retry later.
 EOF
+
+echo "Assigning TestFlight testers/groups (ASC API)…"
+set +e
+run_distribute
+DIST_STATUS=$?
+set -e
+if [[ "$DIST_STATUS" -ne 0 ]]; then
+  echo "TestFlight group assignment failed (exit $DIST_STATUS). The IPA is still in App Store Connect." >&2
+  echo "Create an Internal group, enable Automatic Distribution, or re-run with --assign-only." >&2
+fi

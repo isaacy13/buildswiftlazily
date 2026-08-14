@@ -204,6 +204,26 @@ PWA → install method **TestFlight** → Build & upload.
 
 **After upload:** check [App Store Connect → TestFlight → Builds](https://appstoreconnect.apple.com/apps) — not only the TestFlight iPhone app. Status goes Processing → Ready to Test (usually minutes; sometimes longer). Answer **Export Compliance** if ASC asks, or the build can sit for hours.
 
+### Skip assigning testers on every build
+
+The Groups **+** / Individual Testers **+** controls on a build are per-build. You do not have to click them each time.
+
+**One-time in App Store Connect (simplest):** TestFlight → Testers → create an **Internal** group, add yourself, enable **Automatic Distribution**. New builds then appear for that group without assigning them on the build page.
+
+**This tooling (default):** after a successful upload it calls the App Store Connect API and turns **Automatic Distribution** on for every internal group (`hasAccessToAllBuilds`). Opt out with `BSL_ASC_AUTO_DISTRIBUTE=0`. If you have no internal group yet, create one once and re-upload (or run `upload-testflight.sh --assign-only`).
+
+To also wait for processing and attach *this* build to groups (needed for **external** groups, which cannot auto-distribute):
+
+```bash
+# .env
+BSL_ASC_BETA_GROUPS=internal
+# or named groups: BSL_ASC_BETA_GROUPS=Friends,QA
+```
+
+If the wait times out, the IPA is still in ASC — retry with `--assign-only` (same bundle id / build number) or assign in the UI when the build is Ready to Test.
+
+**Export Compliance** still blocks testers until it is answered. Prefer `ITSAppUsesNonExemptEncryption` = `false` in the app’s Info.plist (no ASC click). Or set `BSL_ASC_USES_NON_EXEMPT_ENCRYPTION=false` so the upload script submits it via the API after processing.
+
 **Do not Ctrl+C** the Mac terminal that is running `./scripts/start.sh` / the control plane during upload — that aborts `altool` mid-transfer. Leave the Mac awake until the job log shows `TESTFLIGHT_UPLOAD=ok`.
 
 ## 6. Doctor
@@ -249,7 +269,8 @@ launchctl load ~/Library/LaunchAgents/com.buildswiftlazily.control.plist
 | Actions 404 | `deploy-ios.yml` on `BSL_TOOLING_REF`, or use local engine |
 | `Could not get GOOGLE_APP_ID` / ARCHIVE FAILED | Gitignored `GoogleService-Info.plist` missing from tarball — set `BSL_CHECKOUT_INJECT` (see `config/env.example`) |
 | TestFlight empty after “upload” | If the log has `Expected apple ID argument is missing` / `TESTFLIGHT_UPLOAD=fail`, the IPA never reached ASC — set `BSL_ASC_APPLE_ID` (App Information → Apple ID) and re-run. Do not wait for processing. Older tooling could print `TESTFLIGHT_UPLOAD=ok` after that error. Also check **ASC → TestFlight → Builds**, not only the phone app. Ctrl+C on the Mac shell aborts upload. |
-| ASC build stuck Processing / Missing Compliance | Answer Export Compliance in App Store Connect; wait out processing (can exceed 1h). |
+| ASC build stuck Processing / Missing Compliance | Answer Export Compliance in App Store Connect, or set `ITSAppUsesNonExemptEncryption` / `BSL_ASC_USES_NON_EXEMPT_ENCRYPTION=false`; wait out processing (can exceed 1h). |
+| Have to tap Groups **+** on every TestFlight build | Create an Internal group, add testers, enable Automatic Distribution (or leave `BSL_ASC_AUTO_DISTRIBUTE=1`). External groups need `BSL_ASC_BETA_GROUPS` (names) so the script assigns each build after processing. |
 | altool auth / missing AuthKey | `AuthKey_<BSL_ASC_KEY_ID>.p8` under `~/.appstoreconnect/private_keys/`; key needs App Manager+ |
 | Duplicate build rejected | Bump CFBundleVersion, rebuild, upload again |
 | Disk fills with old Xcode archives | Each job used to leave DerivedData under `artifacts/builds/<uuid>/`. Jobs now prune that on completion; `./scripts/ttl-sweep.sh` expires leftover OTA/work/builds after `BSL_ARTIFACT_TTL_DAYS` (default 7). Set `BSL_KEEP_BUILD_INTERMEDIATES=1` only while debugging. |

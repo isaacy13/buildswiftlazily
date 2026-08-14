@@ -25,6 +25,7 @@ for s in doctor bootstrap start serve-control serve-ota build-ios install-direct
   fi
 done
 [[ -f "$ROOT/scripts/lib.sh" ]] && pass "scripts/lib.sh" || bad "scripts/lib.sh missing"
+[[ -f "$ROOT/scripts/asc_distribute.py" ]] && pass "scripts/asc_distribute.py" || bad "scripts/asc_distribute.py missing"
 
 echo
 echo "[script CLI / dry-run contracts]"
@@ -74,6 +75,7 @@ fi
 out=$(BSL_DRY_RUN=1 "$ROOT/scripts/upload-testflight.sh" --ipa "$OUT/App.ipa" --dry-run)
 echo "$out" | grep -q TESTFLIGHT_UPLOAD && pass "upload-testflight dry-run" || bad "upload-testflight dry-run"
 echo "$out" | grep -q 'upload-package' && pass "upload-testflight prefers upload-package" || bad "upload-package missing in dry-run"
+echo "$out" | grep -q 'Automatic Distribution' && pass "upload-testflight dry-run mentions tester auto-distribute" || bad "upload-testflight dry-run missing auto-distribute"
 
 python3 - "$TMP/mini.ipa" <<'PY'
 import plistlib, sys, zipfile

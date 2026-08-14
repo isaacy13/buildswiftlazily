@@ -92,6 +92,8 @@ Full checklist (Apple Distribution vs Ad Hoc, UDID, TestFlight, runner): **[docs
 | `GITHUB_TOKEN` | Contents read (+ Actions write if dispatching) |
 | `BSL_DEPLOY_ENGINE` | `local` (default) or `actions` |
 | `BSL_TOOLING_REPO` / `BSL_TOOLING_REF` | Where `deploy-ios.yml` lives (Actions engine only) |
+| `BSL_ASC_KEY_ID` / `BSL_ASC_ISSUER_ID` | App Store Connect API key for TestFlight |
+| `BSL_ASC_BETA_GROUPS` | Optional: `internal` / group names to attach after processing |
 | `config/repos.yaml` | Pinned apps, schemes, favorites |
 
 See `config/env.example` for the full list.
