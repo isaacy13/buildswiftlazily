@@ -94,7 +94,7 @@ echo "$out5" | grep -q 'devicectl device install'
 out5b=$(BSL_DRY_RUN=1 "$ROOT/scripts/install-direct.sh" --app "$TMP/Demo.app" --device test-device --device-class watch --dry-run)
 echo "$out5b" | grep -q 'class=watch'
 
-# Embed Foundation Extensions build-phase reorder (Xcode 15+ archive helper)
+# Embed Foundation Extensions: after Resources, before Thin Binary (not first).
 mkdir -p "$TMP/embed/App.xcodeproj"
 cat > "$TMP/embed/App.xcodeproj/project.pbxproj" <<'PBX'
 // !$*UTF8*$!
@@ -119,9 +119,90 @@ python3 - "$TMP/embed/App.xcodeproj/project.pbxproj" <<'PY'
 import pathlib, re, sys
 text = pathlib.Path(sys.argv[1]).read_text()
 ids = re.findall(r"/\*\s*(.*?)\s*\*/", text.split("buildPhases")[1].split(");")[0])
-assert ids.index("Embed Foundation Extensions") < ids.index("Thin Binary"), ids
+assert ids == [
+    "Sources",
+    "Frameworks",
+    "Resources",
+    "Embed Foundation Extensions",
+    "Thin Binary",
+], ids
 print("embed-order ok")
 PY
+
+# Previous helper put Embed first; that must be corrected too.
+mkdir -p "$TMP/embed-front/App.xcodeproj"
+cat > "$TMP/embed-front/App.xcodeproj/project.pbxproj" <<'PBX'
+// !$*UTF8*$!
+{
+	objects = {
+		AAAAAAAA0000000000000001 /* RemoteInfo */ = { isa = PBXNativeTarget; buildPhases = (
+				BB0000000000000000000004 /* Embed Foundation Extensions */,
+				BB0000000000000000000001 /* Sources */,
+				BB0000000000000000000002 /* Frameworks */,
+				BB0000000000000000000003 /* Resources */,
+				BB0000000000000000000005 /* Thin Binary */,
+			); };
+	};
+	rootObject = ROOT;
+}
+PBX
+fix_front=$(bsl_fix_embed_extension_phases "$TMP/embed-front")
+echo "$fix_front" | grep -q 'Reordered Embed Foundation'
+python3 - "$TMP/embed-front/App.xcodeproj/project.pbxproj" <<'PY'
+import pathlib, re, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+ids = re.findall(r"/\*\s*(.*?)\s*\*/", text.split("buildPhases")[1].split(");")[0])
+assert ids.index("Sources") < ids.index("Embed Foundation Extensions")
+assert ids.index("Resources") < ids.index("Embed Foundation Extensions")
+assert ids.index("Embed Foundation Extensions") < ids.index("Thin Binary")
+print("embed-front-corrected ok")
+PY
+
+# CocoaPods: keep Check Pods Manifest.lock first; embed still before Thin Binary / [CP] scripts.
+mkdir -p "$TMP/embed-pods/App.xcodeproj"
+cat > "$TMP/embed-pods/App.xcodeproj/project.pbxproj" <<'PBX'
+// !$*UTF8*$!
+{
+	objects = {
+		AAAAAAAA0000000000000001 /* RemoteInfo */ = { isa = PBXNativeTarget; buildPhases = (
+				BB0000000000000000000000 /* [CP] Check Pods Manifest.lock */,
+				BB0000000000000000000001 /* Sources */,
+				BB0000000000000000000002 /* Frameworks */,
+				BB0000000000000000000003 /* Resources */,
+				BB0000000000000000000006 /* [CP] Embed Pods Frameworks */,
+				BB0000000000000000000005 /* Thin Binary */,
+				BB0000000000000000000004 /* Embed App Extensions */,
+			); };
+	};
+	rootObject = ROOT;
+}
+PBX
+fix_pods=$(bsl_fix_embed_extension_phases "$TMP/embed-pods")
+echo "$fix_pods" | grep -q 'Reordered Embed Foundation'
+python3 - "$TMP/embed-pods/App.xcodeproj/project.pbxproj" <<'PY'
+import pathlib, re, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+ids = re.findall(r"/\*\s*(.*?)\s*\*/", text.split("buildPhases")[1].split(");")[0])
+assert ids[0] == "[CP] Check Pods Manifest.lock", ids
+assert ids.index("Resources") < ids.index("Embed App Extensions")
+assert ids.index("Embed App Extensions") < ids.index("Thin Binary")
+assert ids.index("Embed App Extensions") < ids.index("[CP] Embed Pods Frameworks")
+print("embed-pods-order ok")
+PY
+
+mkdir -p "$TMP/sandbox/App.xcodeproj"
+cat > "$TMP/sandbox/App.xcodeproj/project.pbxproj" <<'PBX'
+ENABLE_USER_SCRIPT_SANDBOXING = YES;
+OTHER = 1;
+ENABLE_USER_SCRIPT_SANDBOXING = YES;
+PBX
+sb_out=$(bsl_disable_user_script_sandboxing "$TMP/sandbox")
+echo "$sb_out" | grep -q 'Disabled ENABLE_USER_SCRIPT_SANDBOXING'
+grep -q 'ENABLE_USER_SCRIPT_SANDBOXING = NO' "$TMP/sandbox/App.xcodeproj/project.pbxproj"
+if grep -q 'ENABLE_USER_SCRIPT_SANDBOXING = YES' "$TMP/sandbox/App.xcodeproj/project.pbxproj"; then
+  echo "sandbox YES leftover" >&2
+  exit 1
+fi
 
 # Deeper contract checks (path safety, manifest XML, TEAM_ID guard, etc.)
 "$ROOT/scripts/validate-macos.sh" >/dev/null
