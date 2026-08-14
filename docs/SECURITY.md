@@ -35,7 +35,7 @@ Apple’s `itms-services` installer fetches the manifest **without** browser Acc
 
 - Store IPAs under a local artifacts directory (default `~/buildswiftlazily/artifacts`)
 - Prefer unguessable artifact IDs (UUIDs)
-- TTL sweeper deletes old builds (default 7 days)
+- After each job, drop DerivedData / `.xcarchive` / source checkouts; TTL sweeper expires leftover `work/`, `builds/`, and OTA pages (default 7 days)
 - Do not upload IPAs to public GitHub Releases
 - `/ota/<uuid>/` is intentionally unauthenticated (Apple’s installer cannot send API tokens). Tailscale is the gate; UUIDs are unguessable. Anyone already on your tailnet who learns a UUID can fetch that IPA
 - Prefer the **local** deploy engine on a public tooling fork. Actions logs/summaries must not print full OTA URLs (MagicDNS host + UUID); the workflow redacts those lines. Keep `BSL_TS_HOST` out of public repo Variables when possible (use environment secrets on a private fork if you rely on Actions OTA)

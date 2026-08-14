@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
 import { detectIosProjects } from "../src/github.js";
 import {
   assertSafeAgentId,
@@ -20,7 +23,7 @@ import {
   buildItmsUrl,
   buildManifestPlist,
 } from "../src/ota.js";
-import { apiTokenOk, DeployGate, publicError, redact } from "../src/security.js";
+import { apiTokenOk, DeployGate, publicError, redact, stampLogLine } from "../src/security.js";
 import { JobStore } from "../src/jobs.js";
 import {
   filterAndRank,
@@ -32,6 +35,7 @@ import {
   explainDeployFailure,
   failedScriptName,
   lastBuildErrors,
+  sweepJobArtifacts,
 } from "../src/localDeploy.js";
 
 test("detectXcodeProjects finds workspace, skips Pods, hints watchOS", () => {
@@ -306,6 +310,31 @@ test("JobStore.findLive returns newest queued/running job", () => {
   assert.equal(jobs.findLive(), undefined);
 });
 
+test("stampLogLine prefixes local time and skips existing timestamps", () => {
+  const d = new Date(2026, 7, 14, 3, 54, 25);
+  assert.equal(stampLogLine("FAILED after 9m", d), "2026-08-14 03:54:25 FAILED after 9m");
+  assert.equal(
+    stampLogLine("2026-08-13 21:27:31.545 already from xcodebuild", d),
+    "2026-08-13 21:27:31.545 already from xcodebuild",
+  );
+});
+
+test("appendLog stamps job lines", () => {
+  const jobs = new JobStore();
+  const job = jobs.create({
+    engine: "local",
+    repository: "a/b",
+    ref: "main",
+    scheme: "App",
+    deployMode: "ota",
+    status: "running",
+  });
+  jobs.appendLog(job.id, "Deploy started");
+  assert.match(jobs.get(job.id).logs[0], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} Deploy started$/);
+  jobs.appendLog(job.id, "2026-08-13 21:27:31.545 xcodebuild");
+  assert.equal(jobs.get(job.id).logs[1], "2026-08-13 21:27:31.545 xcodebuild");
+});
+
 test("failedScriptName reads the helper that exited", () => {
   assert.equal(failedScriptName("build-ios.sh exited 2 after 9m 41s"), "build-ios.sh");
   assert.equal(failedScriptName("upload-testflight.sh exited 1 after 2m"), "upload-testflight.sh");
@@ -335,11 +364,32 @@ test("explainDeployFailure does not treat archive --mode testflight as an ASC up
   assert.doesNotMatch(msg, /AuthKey_/);
 });
 
+test("explainDeployFailure treats bash unbound variable as a tooling bug", () => {
+  const raw = "upload-testflight.sh exited 1 after 0s";
+  const blob = `${raw}\nscripts/upload-testflight.sh: line 215: BUNDLE_ID…: unbound variable`;
+  const msg = explainDeployFailure(raw, blob);
+  assert.match(msg, /unset variable/);
+  assert.match(msg, /tooling bug/);
+  assert.match(msg, /unbound variable/);
+  assert.doesNotMatch(msg, /BSL_ASC_KEY_ID/);
+  assert.doesNotMatch(msg, /AuthKey_/);
+});
+
 test("explainDeployFailure still explains real altool failures", () => {
   const raw = "upload-testflight.sh exited 1 after 3m";
   const blob = `${raw}\nUnable to authenticate with App Store Connect\nITMS-90018`;
   const msg = explainDeployFailure(raw, blob);
   assert.match(msg, /TestFlight\/ASC upload issue/);
+});
+
+test("explainDeployFailure explains dangling PlugIns appex aliases", () => {
+  const raw = "build-ios.sh exited 2 after 7m 58s";
+  const blob = `${raw}\n** ARCHIVE SUCCEEDED **\nerror: Dangling bundle symlink (ITMS-90018): GuideAI.app/PlugIns/GuideAILiveActivityExtension.appex -> ../../IntermediateBuildFilesPath/UninstalledProducts/iphoneos/GuideAILiveActivityExtension.appex`;
+  const msg = explainDeployFailure(raw, blob);
+  assert.match(msg, /PlugIns\/\.appex alias/);
+  assert.match(msg, /UninstalledProducts/);
+  assert.match(msg, /Dangling bundle symlink/);
+  assert.doesNotMatch(msg, /TestFlight\/ASC/);
 });
 
 test("explainDeployFailure explains embed-phase archive failures", () => {
@@ -348,4 +398,52 @@ test("explainDeployFailure explains embed-phase archive failures", () => {
   const msg = explainDeployFailure(raw, blob);
   assert.match(msg, /embedding app\/watch extensions/);
   assert.doesNotMatch(msg, /TestFlight\/ASC/);
+});
+
+test("sweepJobArtifacts drops checkout and DerivedData, keeps OTA IPA", async () => {
+  const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bsl-sweep-"));
+  const jobId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  fs.mkdirSync(path.join(artifactRoot, "work", jobId, "src"), { recursive: true });
+  fs.mkdirSync(path.join(artifactRoot, "builds", jobId, "DerivedData"), {
+    recursive: true,
+  });
+  fs.writeFileSync(path.join(artifactRoot, "builds", jobId, "App.ipa"), "ipa");
+  fs.writeFileSync(
+    path.join(artifactRoot, "builds", jobId, "xcodebuild-archive.log"),
+    "log",
+  );
+  fs.mkdirSync(path.join(artifactRoot, "www", "ota", jobId), { recursive: true });
+  fs.writeFileSync(path.join(artifactRoot, "www", "ota", jobId, "App.ipa"), "ota");
+  await sweepJobArtifacts(
+    {
+      tsHost: "",
+      controlPort: 1,
+      otaPort: 1,
+      teamId: "",
+      artifactRoot,
+      artifactTtlDays: 7,
+      githubToken: "",
+      cursorApiKey: "",
+      guideAiRepo: "",
+      toolingRepo: "",
+      toolingRef: "main",
+      deployEngine: "local",
+      apiToken: "",
+      allowInsecureApi: true,
+    },
+    jobId,
+  );
+  assert.equal(fs.existsSync(path.join(artifactRoot, "work", jobId)), false);
+  assert.equal(
+    fs.existsSync(path.join(artifactRoot, "builds", jobId, "DerivedData")),
+    false,
+  );
+  assert.equal(
+    fs.existsSync(path.join(artifactRoot, "builds", jobId, "xcodebuild-archive.log")),
+    true,
+  );
+  assert.equal(
+    fs.existsSync(path.join(artifactRoot, "www", "ota", jobId, "App.ipa")),
+    true,
+  );
 });

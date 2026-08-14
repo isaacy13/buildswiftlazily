@@ -212,7 +212,7 @@ run_altool() {
 }
 
 if [[ -z "$APPLE_ID" ]]; then
-  echo "Looking up App Store Connect Apple ID for $BUNDLE_ID…"
+  echo "Looking up App Store Connect Apple ID for ${BUNDLE_ID}…"
   LIST_OUT="$(mktemp)"
   set +e
   xcrun altool --list-apps --output-format json "${AUTH[@]}" >"$LIST_OUT" 2>"$LIST_OUT.err"

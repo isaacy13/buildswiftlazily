@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { redact } from "./security.js";
+import { redact, stampLogLine } from "./security.js";
 
 export type JobStatus =
   | "queued"
@@ -79,7 +79,7 @@ export class JobStore {
   appendLog(id: string, line: string): void {
     const job = this.jobs.get(id);
     if (!job) return;
-    job.logs.push(redact(line));
+    job.logs.push(stampLogLine(redact(line)));
     if (job.logs.length > 400) job.logs.splice(0, job.logs.length - 400);
     job.updatedAt = new Date().toISOString();
   }

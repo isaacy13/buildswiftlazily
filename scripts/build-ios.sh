@@ -220,8 +220,16 @@ echo "Archive step finished."
 
 # Replace bundle-like symlinks in the archive so exportArchive ships real
 # .app/.appex/.framework copies. Aliases here become ITMS-90018 after upload.
+# Xcode often leaves PlugIns/*.appex pointing at UninstalledProducts with a
+# path that is relative to Products/Applications (two levels too shallow).
 if [[ "$DRY_RUN" != "1" && -d "$ARCHIVE_PATH/Products/Applications" ]]; then
-  bsl_materialize_bundle_symlinks "$ARCHIVE_PATH/Products/Applications"
+  if ! bsl_materialize_bundle_symlinks "$ARCHIVE_PATH/Products/Applications" \
+      "$ARCHIVE_PATH" "$DERIVED_DATA"; then
+    echo "Hint: A PlugIns/.appex alias could not be copied from UninstalledProducts." >&2
+    echo "  Live Activity / widget / watch extensions must be in the app scheme and" >&2
+    echo "  archive with SKIP_INSTALL=YES so DerivedData still has the real .appex." >&2
+    exit 2
+  fi
 fi
 
 # Locate .app inside archive for direct install

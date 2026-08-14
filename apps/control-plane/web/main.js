@@ -174,6 +174,71 @@ function fmtTime(iso) {
   }
 }
 
+function formatDurationMs(ms) {
+  const sec = Math.max(0, Math.floor(ms / 1000));
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ${sec % 60}s`;
+  return `${Math.floor(min / 60)}h ${min % 60}m`;
+}
+
+/** Relative time so a finished/failed card answers "how long ago". */
+function formatAgo(iso) {
+  if (!iso) return "";
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return "";
+  const sec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (sec < 45) return "just now";
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) {
+    const rem = min % 60;
+    return rem ? `${hr}h ${rem}m ago` : `${hr}h ago`;
+  }
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d ago`;
+  return fmtTime(iso);
+}
+
+function formatClock(iso) {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
+
+function jobTimingMeta(job, live) {
+  const startedMs = job?.createdAt ? Date.parse(job.createdAt) : NaN;
+  const finishedMs = job?.finishedAt ? Date.parse(job.finishedAt) : NaN;
+  const bits = [];
+  if (live) {
+    if (!Number.isNaN(startedMs)) bits.push(formatDurationMs(Date.now() - startedMs));
+    const clock = formatClock(job.createdAt);
+    if (clock) bits.push(`started ${clock}`);
+    return bits.join(" · ");
+  }
+  if (!Number.isNaN(startedMs) && !Number.isNaN(finishedMs) && finishedMs >= startedMs) {
+    bits.push(`ran ${formatDurationMs(finishedMs - startedMs)}`);
+  }
+  const when = job.finishedAt || job.updatedAt || job.createdAt;
+  const ago = formatAgo(when);
+  if (ago) bits.push(ago);
+  if (ago && !/[,/]/.test(ago)) {
+    const clock = formatClock(when);
+    if (clock) bits.push(clock);
+  }
+  return bits.join(" · ");
+}
+
 function setTab(tab) {
   closeCombos();
   state.tab = tab;
@@ -1246,16 +1311,7 @@ function renderJobCard() {
         : job.status === "cancelled"
           ? "Build cancelled"
           : "Building…";
-  const startedMs = job.createdAt ? Date.parse(job.createdAt) : NaN;
-  const elapsed =
-    live && !Number.isNaN(startedMs)
-      ? (() => {
-          const sec = Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
-          if (sec < 60) return `${sec}s`;
-          const min = Math.floor(sec / 60);
-          return min < 60 ? `${min}m ${sec % 60}s` : `${Math.floor(min / 60)}h ${min % 60}m`;
-        })()
-      : "";
+  const elapsed = jobTimingMeta(job, live);
 
   return `<div class="card job-card ${live ? "is-live" : ""} ${job.status === "succeeded" ? "is-ready" : ""}">
     <div class="job-head">
@@ -1763,7 +1819,9 @@ function renderStatus() {
                   : "run"
             }">${escapeHtml(j.status)}</span>
             <span class="title">${escapeHtml(j.scheme)}</span>
-            <div class="muted">${escapeHtml(j.ref)} · ${escapeHtml(fmtTime(j.updatedAt))}</div>
+            <div class="muted">${escapeHtml(j.ref)} · ${escapeHtml(
+              jobTimingMeta(j, isLiveJob(j)) || fmtTime(j.updatedAt),
+            )}</div>
             ${j.installUrl ? `<a class="secondary" href="${escapeAttr(j.installUrl)}" style="margin-top:0.5rem">Install</a>` : ""}
           </div>`,
         )
@@ -2177,19 +2235,9 @@ function tryPatchLiveJobCard(view) {
 
   const meta = card.querySelector(".job-meta");
   if (meta) {
-    const startedMs = job.createdAt ? Date.parse(job.createdAt) : NaN;
-    let elapsed = "";
-    if (!Number.isNaN(startedMs)) {
-      const sec = Math.max(0, Math.floor((Date.now() - startedMs) / 1000));
-      if (sec < 60) elapsed = `${sec}s`;
-      else {
-        const min = Math.floor(sec / 60);
-        elapsed =
-          min < 60 ? `${min}m ${sec % 60}s` : `${Math.floor(min / 60)}h ${min % 60}m`;
-      }
-    }
+    const timing = jobTimingMeta(job, true);
     const nextMeta = `${job.scheme || job.repository} · ${job.ref} · ${job.deployMode}${
-      elapsed ? ` · ${elapsed}` : ""
+      timing ? ` · ${timing}` : ""
     }`;
     if (meta.textContent !== nextMeta) meta.textContent = nextMeta;
   }

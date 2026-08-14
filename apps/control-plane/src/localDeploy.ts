@@ -21,7 +21,7 @@ import {
   REPO_ROOT,
 } from "./config.js";
 import type { JobStore } from "./jobs.js";
-import { logInfo } from "./security.js";
+import { logInfo, formatLogClock } from "./security.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -318,7 +318,8 @@ export function lastBuildErrors(blob: string, max = 4): string {
     .filter((l) =>
       /^(error:|fatal error:)/i.test(l) ||
       /\*\* ARCHIVE FAILED \*\*/i.test(l) ||
-      /^The following build commands failed:/i.test(l),
+      /^The following build commands failed:/i.test(l) ||
+      /unbound variable/i.test(l),
     );
   if (!lines.length) return "";
   return lines.slice(-max).join(" · ");
@@ -328,6 +329,8 @@ const KEYCHAIN_RE =
   /errSecInteractionNotAllowed|-25308|User interaction is not allowed|CSSMERR_DL_INVALID_ACCESS_CREDENTIALS|codesign.*keychain/i;
 const EMBED_RE =
   /Hint: Embed Foundation\/App Extensions failed|error:.*Embed (?:Foundation|App|ExtensionKit) Extensions|PhaseScriptExecution.*Embed (?:Foundation|App) Extensions/i;
+const DANGLING_APPEX_RE =
+  /Dangling bundle symlink|Could not find a real \.appex/i;
 const ASC_RE =
   /Unable to authenticate|No suitable application records|ITMS-\d+|already been uploaded|redundant binary|invalid API key|altool:.*?failed|TESTFLIGHT_UPLOAD=fail|AuthKey_.*not found/i;
 
@@ -345,11 +348,18 @@ export function explainDeployFailure(raw: string, blob: string): string {
     return `${raw} — Keychain blocked unattended codesign. On the Mac run ./scripts/prepare-keychain.sh (optional: set BSL_KEYCHAIN_PASSWORD in .env). You cannot approve the Keychain dialog from the iPhone.${last}`;
   }
 
+  if (/unbound variable/i.test(blob)) {
+    return `${raw} — Helper script hit an unset variable (bash set -u). This is a tooling bug, not missing ASC credentials.${last}`;
+  }
+
   if (script === "upload-testflight.sh" || (script !== "build-ios.sh" && script !== "install-direct.sh" && ASC_RE.test(blob))) {
     return `${raw} — TestFlight/ASC upload issue. Confirm BSL_ASC_KEY_ID + ISSUER_ID, AuthKey_*.p8, a unique CFBundleVersion, and an ASC app record for this bundle id. Do not Ctrl+C the Mac control-plane shell mid-upload.${last}`;
   }
 
   if (script === "build-ios.sh") {
+    if (DANGLING_APPEX_RE.test(blob)) {
+      return `${raw} — Archive left a PlugIns/.appex alias (Live Activity/widget/watch) that could not be copied from UninstalledProducts. Confirm the extension is in the app scheme; this tooling copies archive aliases before export.${last}`;
+    }
     if (EMBED_RE.test(blob)) {
       return `${raw} — Archive failed while embedding app/watch extensions. Embed Foundation Extensions is moved after Resources and user-script sandboxing is disabled on this checkout. If it still fails: every .appex target must use the same Team (automatic signing); run ./scripts/prepare-keychain.sh if codesign is blocked.${last}`;
     }
@@ -510,7 +520,7 @@ export async function runScript(
           logJob(
             jobs,
             jobId,
-            `${basename} finished OK in ${elapsed} (${lineCount} log lines)`,
+            `${basename} finished OK in ${elapsed} (${lineCount} log lines) at ${formatLogClock()}`,
           );
           resolve({ stdout, stderr });
           return;
@@ -555,7 +565,7 @@ export async function runLocalDeploy(
   const jobStarted = Date.now();
   const phase = (msg: string) => logJob(jobs, jobId, msg);
   phase(
-    `Local deploy ${repository}@${ref} scheme=${scheme} mode=${mode} platform=${platform} configuration=${configuration}`,
+    `Local deploy ${repository}@${ref} scheme=${scheme} mode=${mode} platform=${platform} configuration=${configuration} — started ${formatLogClock()}`,
   );
 
   const forceDry = process.env.BSL_DRY_RUN === "1";
@@ -796,14 +806,14 @@ export async function runLocalDeploy(
 
     throwIfCancelled(jobId);
 
-    phase(`Deploy finished successfully in ${formatElapsed(Date.now() - jobStarted)}`);
+    phase(`Deploy finished successfully in ${formatElapsed(Date.now() - jobStarted)} at ${formatLogClock()}`);
     jobs.patch(jobId, {
       status: "succeeded",
       finishedAt: new Date().toISOString(),
     });
   } catch (e) {
     if (e instanceof JobCancelledError || isJobCancelRequested(jobId)) {
-      phase(`Build cancelled after ${formatElapsed(Date.now() - jobStarted)}`);
+      phase(`Build cancelled after ${formatElapsed(Date.now() - jobStarted)} at ${formatLogClock()}`);
       jobs.patch(jobId, {
         status: "cancelled",
         error: "Cancelled",
@@ -819,8 +829,41 @@ export async function runLocalDeploy(
       error,
       finishedAt: new Date().toISOString(),
     });
-    phase(`FAILED after ${formatElapsed(Date.now() - jobStarted)}: ${error}`);
+    phase(`FAILED after ${formatElapsed(Date.now() - jobStarted)} at ${formatLogClock()}: ${error}`);
   } finally {
     clearJobCancel(jobId);
+    try {
+      await sweepJobArtifacts(env, jobId, (msg) => phase(msg));
+    } catch (err) {
+      phase(
+        `Artifact cleanup skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
+/** Drop this job's checkout + DerivedData/xcarchive, then expire old artifact trees. */
+export async function sweepJobArtifacts(
+  env: Env,
+  jobId: string,
+  log?: (message: string) => void,
+): Promise<void> {
+  if (!/^[A-Za-z0-9_-]+$/.test(jobId)) return;
+  const script = path.join(REPO_ROOT, "scripts/ttl-sweep.sh");
+  if (!fs.existsSync(script)) return;
+  const { stdout, stderr } = await execFileAsync("bash", [script, "--job", jobId], {
+    env: {
+      ...process.env,
+      BSL_ARTIFACT_ROOT: env.artifactRoot,
+      BSL_ARTIFACT_TTL_DAYS: String(env.artifactTtlDays),
+    },
+    timeout: 180_000,
+  });
+  const lines = `${stdout}\n${stderr}`
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  for (const line of lines.slice(0, 30)) {
+    log?.(line);
   }
 }

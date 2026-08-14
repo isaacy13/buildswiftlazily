@@ -210,18 +210,164 @@ PY
 # you get when a "bundle" inside the IPA (.app / .appex / .framework / .bundle)
 # is a symlink (often to DerivedData) instead of a real copy. Materialize those
 # in the xcarchive before exportArchive re-signs.
+#
+# Extra args are optional search roots (xcarchive, DerivedData). Xcode often
+# writes PlugIns/*.appex as a relative alias to UninstalledProducts; that path
+# is relative to Products/Applications, so it dangles once copied into PlugIns.
 bsl_materialize_bundle_symlinks() {
   local root="$1"
   [[ -d "$root" ]] || return 0
-  python3 - "$root" <<'PY'
+  shift
+  python3 - "$root" "$@" <<'PY'
+from __future__ import annotations
+
 import os, pathlib, shutil, sys
 
-root = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[1]).resolve()
+extra_roots = [pathlib.Path(p).resolve() for p in sys.argv[2:] if p]
 suffixes = (".app", ".appex", ".framework", ".bundle", ".xpc")
+SKIP_WALK = {
+    "Index.noindex",
+    "ModuleCache.noindex",
+    "SymbolCache",
+    "Logs",
+    "SDKStatCaches.noindex",
+    "CompilationCache.noindex",
+}
 
 def is_bundle_like(path: pathlib.Path) -> bool:
     name = path.name.lower()
     return any(name.endswith(s) for s in suffixes)
+
+def real_bundle(path: pathlib.Path, skip_link: pathlib.Path) -> pathlib.Path | None:
+    """Return a real file/dir to copy. Never return the symlink we are replacing."""
+    try:
+        if path == skip_link:
+            return None
+        if path.is_symlink():
+            if not path.exists():
+                return None
+            path = path.resolve()
+            if path == skip_link:
+                return None
+        if not path.exists():
+            return None
+        if path.is_dir() or path.is_file():
+            return path
+    except OSError:
+        return None
+    return None
+
+def marker_suffixes(raw: str) -> list[pathlib.Path]:
+    parts = pathlib.PurePosixPath(raw.replace("\\", "/")).parts
+    out = []
+    for marker in ("UninstalledProducts", "IntermediateBuildFilesPath", "BuildProductsPath"):
+        if marker in parts:
+            i = parts.index(marker)
+            out.append(pathlib.Path(*parts[i:]))
+    return out
+
+def consider_under(base: pathlib.Path, name: str, skip_link: pathlib.Path) -> pathlib.Path | None:
+    if not base.exists() or not base.is_dir():
+        return None
+    hit = real_bundle(base / name, skip_link)
+    if hit:
+        return hit
+    try:
+        for child in base.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                hit = real_bundle(child / name, skip_link)
+                if hit:
+                    return hit
+    except OSError:
+        return None
+    return None
+
+def find_real_bundle(link: pathlib.Path, raw: str) -> pathlib.Path | None:
+    skip_link = link
+    if os.path.isabs(raw):
+        hit = real_bundle(pathlib.Path(raw), skip_link)
+        if hit:
+            return hit
+    else:
+        rel = pathlib.Path(raw)
+        for ancestor in [link.parent, *link.parents]:
+            hit = real_bundle(pathlib.Path(os.path.normpath(ancestor / rel)), skip_link)
+            if hit:
+                return hit
+
+    suffixes_from_raw = marker_suffixes(raw)
+    search_roots: list[pathlib.Path] = []
+    seen: set[pathlib.Path] = set()
+
+    def add_root(p: pathlib.Path) -> None:
+        try:
+            r = p.resolve()
+        except OSError:
+            r = p
+        if r in seen or not r.exists():
+            return
+        seen.add(r)
+        search_roots.append(r)
+
+    add_root(root)
+    for extra in extra_roots:
+        add_root(extra)
+    for ancestor in link.parents:
+        add_root(ancestor)
+        if (ancestor / "Products" / "Applications").is_dir():
+            break
+
+    for base in list(search_roots):
+        aa = base / "Build" / "Intermediates.noindex" / "ArchiveIntermediates"
+        add_root(aa)
+        if aa.is_dir():
+            try:
+                for scheme_dir in aa.iterdir():
+                    add_root(scheme_dir)
+            except OSError:
+                pass
+
+    name = link.name
+    for base in search_roots:
+        for suffix in suffixes_from_raw:
+            hit = real_bundle(base / suffix, skip_link)
+            if hit:
+                return hit
+        for rel in (
+            pathlib.Path("IntermediateBuildFilesPath") / "UninstalledProducts",
+            pathlib.Path("UninstalledProducts"),
+            pathlib.Path("BuildProductsPath"),
+        ):
+            hit = consider_under(base / rel, name, skip_link)
+            if hit:
+                return hit
+        products = base / "Build" / "Products"
+        hit = consider_under(products, name, skip_link)
+        if hit:
+            return hit
+
+    # Last resort: shallow walk of archive intermediates only (not all DerivedData).
+    walk_roots = [
+        p
+        for p in search_roots
+        if p.name in {"ArchiveIntermediates", "UninstalledProducts", "IntermediateBuildFilesPath"}
+        or (p / "IntermediateBuildFilesPath").is_dir()
+        or (p / "UninstalledProducts").is_dir()
+    ]
+    for walk_root in walk_roots:
+        for dirpath, dirnames, _filenames in os.walk(walk_root, followlinks=False):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_WALK]
+            base = pathlib.Path(dirpath)
+            if base.name == name:
+                hit = real_bundle(base, skip_link)
+                if hit:
+                    return hit
+            if name in dirnames:
+                hit = real_bundle(base / name, skip_link)
+                if hit:
+                    return hit
+    return None
 
 found = []
 for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
@@ -244,10 +390,15 @@ found.sort(key=lambda p: len(p.parts), reverse=True)
 fixed = 0
 for link in found:
     raw = os.readlink(link)
-    target = (link.parent / raw).resolve() if not os.path.isabs(raw) else pathlib.Path(raw)
-    if not target.exists():
+    target = find_real_bundle(link, raw)
+    if target is None:
         print(
-            f"Dangling bundle symlink (ITMS-90018): {link} -> {raw}",
+            f"error: Dangling bundle symlink (ITMS-90018): {link} -> {raw}",
+            file=sys.stderr,
+        )
+        print(
+            "error: Could not find a real .appex/.framework copy under the "
+            "archive IntermediateBuildFilesPath or DerivedData UninstalledProducts.",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -255,7 +406,7 @@ for link in found:
     if tmp.exists():
         shutil.rmtree(tmp) if tmp.is_dir() and not tmp.is_symlink() else tmp.unlink()
     if target.is_dir():
-        shutil.copytree(target, tmp, symlinks=False)
+        shutil.copytree(target, tmp, symlinks=False, ignore_dangling_symlinks=True)
     else:
         shutil.copy2(target, tmp)
     link.unlink()

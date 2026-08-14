@@ -45,6 +45,35 @@ echo "$out3b" | grep -q -- '--bundle-id com.demo.app'
 echo "$out3b" | grep -q -- '--bundle-version 42'
 echo "$out3b" | grep -q -- '--bundle-short-version-string 1.2.3'
 
+# Unbraced $VAR + ellipsis is a different identifier under bash set -u (macOS).
+python3 - "$ROOT/scripts" <<'PY'
+import pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+pat = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*…")
+skip = {"test-scripts.sh", "validate-macos.sh"}
+bad = []
+for p in sorted(root.glob("*.sh")):
+    if p.name in skip:
+        continue
+    for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+        if line.lstrip().startswith("#"):
+            continue
+        if pat.search(line):
+            bad.append(f"{p.name}:{i}: {line.strip()}")
+if bad:
+    print("unbraced $VAR… would fail set -u:\n" + "\n".join(bad), file=sys.stderr)
+    sys.exit(1)
+text = (root / "upload-testflight.sh").read_text(encoding="utf-8")
+if "for ${BUNDLE_ID}…" not in text:
+    print("upload-testflight.sh must brace BUNDLE_ID before ellipsis", file=sys.stderr)
+    sys.exit(1)
+PY
+BUNDLE_ID="com.demo.app"
+(
+  set -u
+  echo "Looking up App Store Connect Apple ID for ${BUNDLE_ID}…"
+) >/dev/null
+
 # ITMS-90018 helpers: materialize archive aliases; reject non-zip / symlink bundles
 # shellcheck source=lib.sh
 source "$ROOT/scripts/lib.sh"
@@ -56,6 +85,37 @@ echo "$fix_sy" | grep -q 'Materialized'
 test -d "$TMP/arch/Demo.app/PlugIn.appex"
 test ! -L "$TMP/arch/Demo.app/PlugIn.appex"
 grep -q plugin "$TMP/arch/Demo.app/PlugIn.appex/Info.plist"
+
+# Xcode writes PlugIns/*.appex relative to Products/Applications (two levels too shallow).
+mkdir -p "$TMP/xcarch/Products/Applications/Demo.app/PlugIns"
+mkdir -p "$TMP/xcarch/IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Live.appex"
+echo widget > "$TMP/xcarch/IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Live.appex/Info.plist"
+ln -s "../../IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Live.appex" \
+  "$TMP/xcarch/Products/Applications/Demo.app/PlugIns/Live.appex"
+fix_dangle=$(bsl_materialize_bundle_symlinks "$TMP/xcarch/Products/Applications" "$TMP/xcarch")
+echo "$fix_dangle" | grep -q 'Materialized'
+test -d "$TMP/xcarch/Products/Applications/Demo.app/PlugIns/Live.appex"
+test ! -L "$TMP/xcarch/Products/Applications/Demo.app/PlugIns/Live.appex"
+grep -q widget "$TMP/xcarch/Products/Applications/Demo.app/PlugIns/Live.appex/Info.plist"
+
+# Same alias, real .appex only in DerivedData ArchiveIntermediates.
+mkdir -p "$TMP/xcarch2/Products/Applications/Demo.app/PlugIns"
+mkdir -p "$TMP/dd/Build/Intermediates.noindex/ArchiveIntermediates/Demo/IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Widget.appex"
+echo ddwidget > "$TMP/dd/Build/Intermediates.noindex/ArchiveIntermediates/Demo/IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Widget.appex/Info.plist"
+ln -s "../../IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Widget.appex" \
+  "$TMP/xcarch2/Products/Applications/Demo.app/PlugIns/Widget.appex"
+fix_dd=$(bsl_materialize_bundle_symlinks "$TMP/xcarch2/Products/Applications" "$TMP/xcarch2" "$TMP/dd")
+echo "$fix_dd" | grep -q 'Materialized'
+test ! -L "$TMP/xcarch2/Products/Applications/Demo.app/PlugIns/Widget.appex"
+grep -q ddwidget "$TMP/xcarch2/Products/Applications/Demo.app/PlugIns/Widget.appex/Info.plist"
+
+mkdir -p "$TMP/xcarch3/Products/Applications/Demo.app/PlugIns"
+ln -s "../../IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Missing.appex" \
+  "$TMP/xcarch3/Products/Applications/Demo.app/PlugIns/Missing.appex"
+if bsl_materialize_bundle_symlinks "$TMP/xcarch3/Products/Applications" "$TMP/xcarch3" >/dev/null 2>&1; then
+  echo "expected missing UninstalledProducts appex to fail" >&2
+  exit 1
+fi
 ident=$(bsl_ipa_bundle_identity "$TMP/mini.ipa")
 echo "$ident" | grep -q $'com.demo.app\t42\t1.2.3'
 aid=$(printf '%s\n' '{"applications":[{"bundleID":"com.demo.app","appleId":1234567890}]}' | bsl_apple_id_from_list_apps com.demo.app)
@@ -201,6 +261,46 @@ echo "$sb_out" | grep -q 'Disabled ENABLE_USER_SCRIPT_SANDBOXING'
 grep -q 'ENABLE_USER_SCRIPT_SANDBOXING = NO' "$TMP/sandbox/App.xcodeproj/project.pbxproj"
 if grep -q 'ENABLE_USER_SCRIPT_SANDBOXING = YES' "$TMP/sandbox/App.xcodeproj/project.pbxproj"; then
   echo "sandbox YES leftover" >&2
+  exit 1
+fi
+
+# ttl-sweep: prune job intermediates immediately; expire old OTA/work trees
+SWEEP="$TMP/artifacts"
+mkdir -p "$SWEEP/work/job-old/src" "$SWEEP/work/job-new/src"
+mkdir -p "$SWEEP/builds/job-new/DerivedData/x" "$SWEEP/builds/job-new/App.xcarchive"
+mkdir -p "$SWEEP/builds/job-new/export" "$SWEEP/builds/job-new/app"
+echo ipa > "$SWEEP/builds/job-new/App.ipa"
+echo log > "$SWEEP/builds/job-new/xcodebuild-archive.log"
+mkdir -p "$SWEEP/www/ota/job-new" "$SWEEP/www/ota/job-old"
+echo ota > "$SWEEP/www/ota/job-new/App.ipa"
+echo oldota > "$SWEEP/www/ota/job-old/App.ipa"
+python3 - "$SWEEP" <<'PY'
+import os, sys, time
+root = sys.argv[1]
+old = time.time() - 10 * 86400
+for p in (f"{root}/work/job-old", f"{root}/www/ota/job-old"):
+    os.utime(p, (old, old))
+PY
+sweep_out=$(BSL_ARTIFACT_ROOT="$SWEEP" BSL_ARTIFACT_TTL_DAYS=7 "$ROOT/scripts/ttl-sweep.sh" --job job-new)
+echo "$sweep_out" | grep -q 'job checkout'
+test ! -d "$SWEEP/work/job-new"
+test ! -d "$SWEEP/builds/job-new/DerivedData"
+test ! -d "$SWEEP/builds/job-new/App.xcarchive"
+test -f "$SWEEP/builds/job-new/xcodebuild-archive.log"
+test ! -f "$SWEEP/builds/job-new/App.ipa"
+test -f "$SWEEP/www/ota/job-new/App.ipa"
+test ! -d "$SWEEP/work/job-old"
+test ! -d "$SWEEP/www/ota/job-old"
+mkdir -p "$SWEEP/work/keep-me"
+dry_sweep=$(BSL_ARTIFACT_ROOT="$SWEEP" BSL_ARTIFACT_TTL_DAYS=7 "$ROOT/scripts/ttl-sweep.sh" --dry-run --job keep-me)
+echo "$dry_sweep" | grep -q DRY_RUN
+test -d "$SWEEP/work/keep-me"
+mkdir -p "$SWEEP/work/keep2" "$SWEEP/builds/keep2/DerivedData"
+keep_out=$(BSL_ARTIFACT_ROOT="$SWEEP" BSL_KEEP_BUILD_INTERMEDIATES=1 "$ROOT/scripts/ttl-sweep.sh" --job keep2)
+echo "$keep_out" | grep -q KEEP
+test -d "$SWEEP/work/keep2"
+if BSL_ARTIFACT_ROOT="$SWEEP" "$ROOT/scripts/ttl-sweep.sh" --job 'foo/../bar' >/dev/null 2>&1; then
+  echo "expected invalid --job to fail" >&2
   exit 1
 fi
 

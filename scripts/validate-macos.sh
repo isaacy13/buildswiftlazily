@@ -102,6 +102,32 @@ if bsl_materialize_bundle_symlinks "$TMP/arch" | grep -q Materialized && [[ ! -L
 else
   bad "materialize bundle symlink"
 fi
+
+mkdir -p "$TMP/xcarch/Products/Applications/Demo.app/PlugIns"
+mkdir -p "$TMP/xcarch/IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Live.appex"
+echo widget > "$TMP/xcarch/IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Live.appex/Info.plist"
+ln -s "../../IntermediateBuildFilesPath/UninstalledProducts/iphoneos/Live.appex" \
+  "$TMP/xcarch/Products/Applications/Demo.app/PlugIns/Live.appex"
+if bsl_materialize_bundle_symlinks "$TMP/xcarch/Products/Applications" "$TMP/xcarch" | grep -q Materialized \
+  && [[ ! -L "$TMP/xcarch/Products/Applications/Demo.app/PlugIns/Live.appex" ]] \
+  && grep -q widget "$TMP/xcarch/Products/Applications/Demo.app/PlugIns/Live.appex/Info.plist"; then
+  pass "materialize dangling PlugIns appex from UninstalledProducts"
+else
+  bad "materialize dangling PlugIns appex"
+fi
+
+SWEEP="$TMP/sweep-art"
+mkdir -p "$SWEEP/work/oldjob" "$SWEEP/builds/newjob/DerivedData"
+python3 - "$SWEEP/work/oldjob" <<'PY'
+import os, sys, time
+os.utime(sys.argv[1], (time.time() - 10 * 86400, time.time() - 10 * 86400))
+PY
+if BSL_ARTIFACT_ROOT="$SWEEP" BSL_ARTIFACT_TTL_DAYS=7 "$ROOT/scripts/ttl-sweep.sh" --job newjob | grep -q Removing \
+  && [[ ! -d "$SWEEP/work/oldjob" ]] && [[ ! -d "$SWEEP/builds/newjob/DerivedData" ]]; then
+  pass "ttl-sweep prunes job intermediates and expired work trees"
+else
+  bad "ttl-sweep prune"
+fi
 if bsl_assert_ipa_payload "$TMP/mini.ipa" >/dev/null; then
   pass "assert IPA zip payload"
 else

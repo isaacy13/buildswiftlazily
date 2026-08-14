@@ -173,7 +173,10 @@ ART="${BSL_ARTIFACT_ROOT:-$HOME/buildswiftlazily/artifacts}"
 ART="${ART/#\~/$HOME}"
 mkdir -p "$ART" 2>/dev/null || true
 if [[ -d "$ART" ]]; then
-  pass "artifact root: $ART"
+  SIZE="$(du -sh "$ART" 2>/dev/null | awk '{print $1}' || true)"
+  pass "artifact root: $ART${SIZE:+ ($SIZE)}"
+  DAYS="${BSL_ARTIFACT_TTL_DAYS:-7}"
+  note "TTL ${DAYS}d on www/ota + work/ + builds/; job DerivedData is pruned when the build ends (./scripts/ttl-sweep.sh)"
 else
   bad "cannot create artifact root: $ART"
 fi
