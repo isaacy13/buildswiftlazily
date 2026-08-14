@@ -726,26 +726,49 @@ function filteredAgents() {
 
 const COMBO_LIMIT = 50;
 
+let restoringFocus = false;
+
+function selectionOf(el) {
+  const len = String(el.value ?? "").length;
+  let start = el.selectionStart;
+  let end = el.selectionEnd;
+  if (typeof start !== "number") start = len;
+  if (typeof end !== "number") end = start;
+  return { start, end };
+}
+
 function restoreFocusedField(id, start, end) {
   const el = app.querySelector(`#${CSS.escape(id)}`);
   if (!el || typeof el.focus !== "function") return;
-  el.focus();
+  restoringFocus = true;
   try {
-    if (typeof start === "number" && typeof end === "number") {
-      el.setSelectionRange(start, end);
-    }
-  } catch {
-    /* ignore */
+    el.focus({ preventScroll: true });
+  } finally {
+    restoringFocus = false;
   }
+  const applyRange = () => {
+    if (document.activeElement !== el) return;
+    try {
+      if (typeof el.setSelectionRange !== "function") return;
+      if (typeof start !== "number" || typeof end !== "number") return;
+      const len = String(el.value ?? "").length;
+      el.setSelectionRange(
+        Math.max(0, Math.min(start, len)),
+        Math.max(0, Math.min(end, len)),
+      );
+    } catch {
+      /* ignore */
+    }
+  };
+  applyRange();
+  // iOS often ignores setSelectionRange in the same turn as focus().
+  requestAnimationFrame(applyRange);
 }
 
 function rememberFocusFromEl(el) {
-  if (!el?.id) return;
-  state.focusField = {
-    id: el.id,
-    start: el.selectionStart,
-    end: el.selectionEnd,
-  };
+  if (!el?.id || restoringFocus) return;
+  const { start, end } = selectionOf(el);
+  state.focusField = { id: el.id, start, end };
 }
 
 function restoreRememberedFocus() {
@@ -956,13 +979,13 @@ function bindCombobox(view, { id, openKey, queryKey, highlightKey, onSelect }) {
 
   input.addEventListener("focus", () => {
     closeCombos({ except: id });
-    rememberFocusFromEl(input);
     if (state[openKey]) return;
+    rememberFocusFromEl(input);
     state[openKey] = true;
     state[queryKey] = "";
     state[highlightKey] = 0;
     render();
-    restoreFocusedField(input.id);
+    restoreFocusedField(input.id, 0, 0);
   });
 
   input.addEventListener("input", () => {
@@ -971,7 +994,6 @@ function bindCombobox(view, { id, openKey, queryKey, highlightKey, onSelect }) {
     state[highlightKey] = 0;
     rememberFocusFromEl(input);
     render();
-    restoreRememberedFocus();
   });
 
   input.addEventListener("keydown", (e) => {
@@ -988,7 +1010,6 @@ function bindCombobox(view, { id, openKey, queryKey, highlightKey, onSelect }) {
         state[highlightKey] = ((state[highlightKey] || 0) + 1) % count;
       }
       render();
-      restoreRememberedFocus();
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       rememberFocusFromEl(input);
@@ -996,7 +1017,6 @@ function bindCombobox(view, { id, openKey, queryKey, highlightKey, onSelect }) {
         state[highlightKey] = ((state[highlightKey] || 0) - 1 + count) % count;
       }
       render();
-      restoreRememberedFocus();
     } else if (e.key === "Enter") {
       e.preventDefault();
       const active =
@@ -1945,33 +1965,36 @@ function bindViewEvents(view) {
 
   const agentsQuery = view.querySelector("#agentsQuery");
   if (agentsQuery) {
-    agentsQuery.addEventListener("focus", () => rememberFocusFromEl(agentsQuery));
+    agentsQuery.addEventListener("focus", () => {
+      if (!restoringFocus) rememberFocusFromEl(agentsQuery);
+    });
     agentsQuery.addEventListener("input", () => {
       state.agentsQuery = agentsQuery.value || "";
       persistAgentsFilters();
       rememberFocusFromEl(agentsQuery);
       render();
-      restoreRememberedFocus();
     });
   }
   const statusQuery = view.querySelector("#statusQuery");
   if (statusQuery) {
-    statusQuery.addEventListener("focus", () => rememberFocusFromEl(statusQuery));
+    statusQuery.addEventListener("focus", () => {
+      if (!restoringFocus) rememberFocusFromEl(statusQuery);
+    });
     statusQuery.addEventListener("input", () => {
       state.statusQuery = statusQuery.value || "";
       rememberFocusFromEl(statusQuery);
       render();
-      restoreRememberedFocus();
     });
   }
   const iosQuery = view.querySelector("#iosQuery");
   if (iosQuery) {
-    iosQuery.addEventListener("focus", () => rememberFocusFromEl(iosQuery));
+    iosQuery.addEventListener("focus", () => {
+      if (!restoringFocus) rememberFocusFromEl(iosQuery);
+    });
     iosQuery.addEventListener("input", () => {
       state.iosQuery = iosQuery.value || "";
       rememberFocusFromEl(iosQuery);
       render();
-      restoreRememberedFocus();
     });
   }
   const agentsShowArchived = view.querySelector("#agentsShowArchived");
