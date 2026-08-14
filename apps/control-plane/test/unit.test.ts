@@ -23,7 +23,7 @@ import {
   buildItmsUrl,
   buildManifestPlist,
 } from "../src/ota.js";
-import { apiTokenOk, DeployGate, publicError, redact } from "../src/security.js";
+import { apiTokenOk, DeployGate, publicError, redact, stampLogLine } from "../src/security.js";
 import { JobStore } from "../src/jobs.js";
 import {
   filterAndRank,
@@ -308,6 +308,31 @@ test("JobStore.findLive returns newest queued/running job", () => {
   assert.equal(jobs.findLive()?.id, live.id);
   jobs.patch(live.id, { status: "cancelled" });
   assert.equal(jobs.findLive(), undefined);
+});
+
+test("stampLogLine prefixes local time and skips existing timestamps", () => {
+  const d = new Date(2026, 7, 14, 3, 54, 25);
+  assert.equal(stampLogLine("FAILED after 9m", d), "2026-08-14 03:54:25 FAILED after 9m");
+  assert.equal(
+    stampLogLine("2026-08-13 21:27:31.545 already from xcodebuild", d),
+    "2026-08-13 21:27:31.545 already from xcodebuild",
+  );
+});
+
+test("appendLog stamps job lines", () => {
+  const jobs = new JobStore();
+  const job = jobs.create({
+    engine: "local",
+    repository: "a/b",
+    ref: "main",
+    scheme: "App",
+    deployMode: "ota",
+    status: "running",
+  });
+  jobs.appendLog(job.id, "Deploy started");
+  assert.match(jobs.get(job.id).logs[0], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} Deploy started$/);
+  jobs.appendLog(job.id, "2026-08-13 21:27:31.545 xcodebuild");
+  assert.equal(jobs.get(job.id).logs[1], "2026-08-13 21:27:31.545 xcodebuild");
 });
 
 test("failedScriptName reads the helper that exited", () => {

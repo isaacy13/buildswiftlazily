@@ -44,11 +44,27 @@ export function redact(text: string, extra: string[] = []): string {
 }
 
 export function logInfo(message: string, extraSecrets: string[] = []): void {
-  console.log(redact(message, extraSecrets));
+  console.log(stampLogLine(redact(message, extraSecrets)));
 }
 
 export function logError(message: string, extraSecrets: string[] = []): void {
-  console.error(redact(message, extraSecrets));
+  console.error(stampLogLine(redact(message, extraSecrets)));
+}
+
+/** Local wall clock for job/console logs (Mac timezone). */
+export function formatLogClock(d = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+const LOG_TS_RE = /^\[?\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/;
+
+/** Prefix a log line with local time unless it already has a timestamp. */
+export function stampLogLine(line: string, d = new Date()): string {
+  const text = String(line ?? "");
+  if (!text.trim()) return text;
+  if (LOG_TS_RE.test(text.trimStart())) return text;
+  return `${formatLogClock(d)} ${text}`;
 }
 
 /** Safe client-facing error (avoid leaking stack traces / absolute paths). */

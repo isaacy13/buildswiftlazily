@@ -21,7 +21,7 @@ import {
   REPO_ROOT,
 } from "./config.js";
 import type { JobStore } from "./jobs.js";
-import { logInfo } from "./security.js";
+import { logInfo, formatLogClock } from "./security.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -520,7 +520,7 @@ export async function runScript(
           logJob(
             jobs,
             jobId,
-            `${basename} finished OK in ${elapsed} (${lineCount} log lines)`,
+            `${basename} finished OK in ${elapsed} (${lineCount} log lines) at ${formatLogClock()}`,
           );
           resolve({ stdout, stderr });
           return;
@@ -565,7 +565,7 @@ export async function runLocalDeploy(
   const jobStarted = Date.now();
   const phase = (msg: string) => logJob(jobs, jobId, msg);
   phase(
-    `Local deploy ${repository}@${ref} scheme=${scheme} mode=${mode} platform=${platform} configuration=${configuration}`,
+    `Local deploy ${repository}@${ref} scheme=${scheme} mode=${mode} platform=${platform} configuration=${configuration} — started ${formatLogClock()}`,
   );
 
   const forceDry = process.env.BSL_DRY_RUN === "1";
@@ -806,14 +806,14 @@ export async function runLocalDeploy(
 
     throwIfCancelled(jobId);
 
-    phase(`Deploy finished successfully in ${formatElapsed(Date.now() - jobStarted)}`);
+    phase(`Deploy finished successfully in ${formatElapsed(Date.now() - jobStarted)} at ${formatLogClock()}`);
     jobs.patch(jobId, {
       status: "succeeded",
       finishedAt: new Date().toISOString(),
     });
   } catch (e) {
     if (e instanceof JobCancelledError || isJobCancelRequested(jobId)) {
-      phase(`Build cancelled after ${formatElapsed(Date.now() - jobStarted)}`);
+      phase(`Build cancelled after ${formatElapsed(Date.now() - jobStarted)} at ${formatLogClock()}`);
       jobs.patch(jobId, {
         status: "cancelled",
         error: "Cancelled",
@@ -829,7 +829,7 @@ export async function runLocalDeploy(
       error,
       finishedAt: new Date().toISOString(),
     });
-    phase(`FAILED after ${formatElapsed(Date.now() - jobStarted)}: ${error}`);
+    phase(`FAILED after ${formatElapsed(Date.now() - jobStarted)} at ${formatLogClock()}: ${error}`);
   } finally {
     clearJobCancel(jobId);
     try {
