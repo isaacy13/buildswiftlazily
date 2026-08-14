@@ -203,7 +203,15 @@ jobs:
 
       - name: Sweep old artifacts
         if: always()
-        run: tooling/scripts/ttl-sweep.sh || true
+        env:
+          ARTIFACT_ID: ${{ steps.prep.outputs.artifact_id }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${ARTIFACT_ID:-}" ]]; then
+            tooling/scripts/ttl-sweep.sh --job "$ARTIFACT_ID" || true
+          else
+            tooling/scripts/ttl-sweep.sh || true
+          fi
 
       - name: Job summary
         if: always()

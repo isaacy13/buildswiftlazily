@@ -13,6 +13,7 @@ buildswiftlazily is a **single-operator** Mac-hosted control plane plus shell sc
 | `scripts/upload-testflight.sh` | Validate + upload App Store IPA via `altool` (`--upload-package`, ASC API key). |
 | `scripts/install-direct.sh` | `devicectl` install/launch on a paired **iPhone or Apple Watch**. |
 | `scripts/prepare-keychain.sh` | One-time unattended codesign Keychain prep. |
+| `scripts/ttl-sweep.sh` | Expire OTA/work/builds trees older than `BSL_ARTIFACT_TTL_DAYS`; `--job` drops DerivedData after a build. |
 | `scripts/bootstrap.sh` / `start.sh` / `doctor.sh` | First-run, launch, and host checks. |
 | `.github/workflows/deploy-ios.yml` | Optional remote path: self-hosted Mac runner runs the same scripts. |
 
@@ -23,6 +24,7 @@ buildswiftlazily is a **single-operator** Mac-hosted control plane plus shell sc
 3. `runLocalDeploy` downloads a GitHub tarball (symlink-safe extract), runs `build-ios.sh`.
 4. For OTA: `serve-ota.sh` publishes under `~/buildswiftlazily/artifacts/www/ota/<uuid>/`.
 5. PWA polls `/api/jobs/:id` and shows the install URL (`https://$BSL_TS_HOST/ota/...`).
+6. When the job finishes, `ttl-sweep.sh --job` deletes that job’s source checkout and DerivedData/xcarchive. Age-based sweep (startup + hourly + after each job) expires leftover `work/`, `builds/`, and OTA pages.
 
 ## Request path (Actions engine)
 

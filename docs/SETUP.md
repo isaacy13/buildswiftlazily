@@ -251,6 +251,7 @@ launchctl load ~/Library/LaunchAgents/com.buildswiftlazily.control.plist
 | ASC build stuck Processing / Missing Compliance | Answer Export Compliance in App Store Connect; wait out processing (can exceed 1h). |
 | altool auth / missing AuthKey | `AuthKey_<BSL_ASC_KEY_ID>.p8` under `~/.appstoreconnect/private_keys/`; key needs App Manager+ |
 | Duplicate build rejected | Bump CFBundleVersion, rebuild, upload again |
+| Disk fills with old Xcode archives | Each job used to leave DerivedData under `artifacts/builds/<uuid>/`. Jobs now prune that on completion; `./scripts/ttl-sweep.sh` expires leftover OTA/work/builds after `BSL_ARTIFACT_TTL_DAYS` (default 7). Set `BSL_KEEP_BUILD_INTERMEDIATES=1` only while debugging. |
 | ASC email **ITMS-90018** (file extension must be .zip) | Rebuild with this tooling (archive aliases are copied before export) and bump **CFBundleVersion**. `altool --upload-package` now sends bundle id/version. Optional: set `BSL_ASC_APPLE_ID`. |
 | `Dangling bundle symlink` / Live Activity `.appex` after **ARCHIVE SUCCEEDED** | Xcode left `PlugIns/*.appex` as an alias to `UninstalledProducts`. The build copies that real extension from the xcarchive or DerivedData before export. If it still fails, the extension is not in the archived scheme (or was cleaned). |
 

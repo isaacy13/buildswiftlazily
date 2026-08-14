@@ -832,5 +832,38 @@ export async function runLocalDeploy(
     phase(`FAILED after ${formatElapsed(Date.now() - jobStarted)}: ${error}`);
   } finally {
     clearJobCancel(jobId);
+    try {
+      await sweepJobArtifacts(env, jobId, (msg) => phase(msg));
+    } catch (err) {
+      phase(
+        `Artifact cleanup skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
+/** Drop this job's checkout + DerivedData/xcarchive, then expire old artifact trees. */
+export async function sweepJobArtifacts(
+  env: Env,
+  jobId: string,
+  log?: (message: string) => void,
+): Promise<void> {
+  if (!/^[A-Za-z0-9_-]+$/.test(jobId)) return;
+  const script = path.join(REPO_ROOT, "scripts/ttl-sweep.sh");
+  if (!fs.existsSync(script)) return;
+  const { stdout, stderr } = await execFileAsync("bash", [script, "--job", jobId], {
+    env: {
+      ...process.env,
+      BSL_ARTIFACT_ROOT: env.artifactRoot,
+      BSL_ARTIFACT_TTL_DAYS: String(env.artifactTtlDays),
+    },
+    timeout: 180_000,
+  });
+  const lines = `${stdout}\n${stderr}`
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  for (const line of lines.slice(0, 30)) {
+    log?.(line);
   }
 }

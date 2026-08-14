@@ -264,6 +264,46 @@ if grep -q 'ENABLE_USER_SCRIPT_SANDBOXING = YES' "$TMP/sandbox/App.xcodeproj/pro
   exit 1
 fi
 
+# ttl-sweep: prune job intermediates immediately; expire old OTA/work trees
+SWEEP="$TMP/artifacts"
+mkdir -p "$SWEEP/work/job-old/src" "$SWEEP/work/job-new/src"
+mkdir -p "$SWEEP/builds/job-new/DerivedData/x" "$SWEEP/builds/job-new/App.xcarchive"
+mkdir -p "$SWEEP/builds/job-new/export" "$SWEEP/builds/job-new/app"
+echo ipa > "$SWEEP/builds/job-new/App.ipa"
+echo log > "$SWEEP/builds/job-new/xcodebuild-archive.log"
+mkdir -p "$SWEEP/www/ota/job-new" "$SWEEP/www/ota/job-old"
+echo ota > "$SWEEP/www/ota/job-new/App.ipa"
+echo oldota > "$SWEEP/www/ota/job-old/App.ipa"
+python3 - "$SWEEP" <<'PY'
+import os, sys, time
+root = sys.argv[1]
+old = time.time() - 10 * 86400
+for p in (f"{root}/work/job-old", f"{root}/www/ota/job-old"):
+    os.utime(p, (old, old))
+PY
+sweep_out=$(BSL_ARTIFACT_ROOT="$SWEEP" BSL_ARTIFACT_TTL_DAYS=7 "$ROOT/scripts/ttl-sweep.sh" --job job-new)
+echo "$sweep_out" | grep -q 'job checkout'
+test ! -d "$SWEEP/work/job-new"
+test ! -d "$SWEEP/builds/job-new/DerivedData"
+test ! -d "$SWEEP/builds/job-new/App.xcarchive"
+test -f "$SWEEP/builds/job-new/xcodebuild-archive.log"
+test ! -f "$SWEEP/builds/job-new/App.ipa"
+test -f "$SWEEP/www/ota/job-new/App.ipa"
+test ! -d "$SWEEP/work/job-old"
+test ! -d "$SWEEP/www/ota/job-old"
+mkdir -p "$SWEEP/work/keep-me"
+dry_sweep=$(BSL_ARTIFACT_ROOT="$SWEEP" BSL_ARTIFACT_TTL_DAYS=7 "$ROOT/scripts/ttl-sweep.sh" --dry-run --job keep-me)
+echo "$dry_sweep" | grep -q DRY_RUN
+test -d "$SWEEP/work/keep-me"
+mkdir -p "$SWEEP/work/keep2" "$SWEEP/builds/keep2/DerivedData"
+keep_out=$(BSL_ARTIFACT_ROOT="$SWEEP" BSL_KEEP_BUILD_INTERMEDIATES=1 "$ROOT/scripts/ttl-sweep.sh" --job keep2)
+echo "$keep_out" | grep -q KEEP
+test -d "$SWEEP/work/keep2"
+if BSL_ARTIFACT_ROOT="$SWEEP" "$ROOT/scripts/ttl-sweep.sh" --job 'foo/../bar' >/dev/null 2>&1; then
+  echo "expected invalid --job to fail" >&2
+  exit 1
+fi
+
 # Deeper contract checks (path safety, manifest XML, TEAM_ID guard, etc.)
 "$ROOT/scripts/validate-macos.sh" >/dev/null
 

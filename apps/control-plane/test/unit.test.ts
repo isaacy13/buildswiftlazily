@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
 import { detectIosProjects } from "../src/github.js";
 import {
   assertSafeAgentId,
@@ -32,6 +35,7 @@ import {
   explainDeployFailure,
   failedScriptName,
   lastBuildErrors,
+  sweepJobArtifacts,
 } from "../src/localDeploy.js";
 
 test("detectXcodeProjects finds workspace, skips Pods, hints watchOS", () => {
@@ -369,4 +373,52 @@ test("explainDeployFailure explains embed-phase archive failures", () => {
   const msg = explainDeployFailure(raw, blob);
   assert.match(msg, /embedding app\/watch extensions/);
   assert.doesNotMatch(msg, /TestFlight\/ASC/);
+});
+
+test("sweepJobArtifacts drops checkout and DerivedData, keeps OTA IPA", async () => {
+  const artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bsl-sweep-"));
+  const jobId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  fs.mkdirSync(path.join(artifactRoot, "work", jobId, "src"), { recursive: true });
+  fs.mkdirSync(path.join(artifactRoot, "builds", jobId, "DerivedData"), {
+    recursive: true,
+  });
+  fs.writeFileSync(path.join(artifactRoot, "builds", jobId, "App.ipa"), "ipa");
+  fs.writeFileSync(
+    path.join(artifactRoot, "builds", jobId, "xcodebuild-archive.log"),
+    "log",
+  );
+  fs.mkdirSync(path.join(artifactRoot, "www", "ota", jobId), { recursive: true });
+  fs.writeFileSync(path.join(artifactRoot, "www", "ota", jobId, "App.ipa"), "ota");
+  await sweepJobArtifacts(
+    {
+      tsHost: "",
+      controlPort: 1,
+      otaPort: 1,
+      teamId: "",
+      artifactRoot,
+      artifactTtlDays: 7,
+      githubToken: "",
+      cursorApiKey: "",
+      guideAiRepo: "",
+      toolingRepo: "",
+      toolingRef: "main",
+      deployEngine: "local",
+      apiToken: "",
+      allowInsecureApi: true,
+    },
+    jobId,
+  );
+  assert.equal(fs.existsSync(path.join(artifactRoot, "work", jobId)), false);
+  assert.equal(
+    fs.existsSync(path.join(artifactRoot, "builds", jobId, "DerivedData")),
+    false,
+  );
+  assert.equal(
+    fs.existsSync(path.join(artifactRoot, "builds", jobId, "xcodebuild-archive.log")),
+    true,
+  );
+  assert.equal(
+    fs.existsSync(path.join(artifactRoot, "www", "ota", jobId, "App.ipa")),
+    true,
+  );
 });
