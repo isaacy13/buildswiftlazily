@@ -338,6 +338,10 @@ test("appendLog stamps job lines", () => {
 test("failedScriptName reads the helper that exited", () => {
   assert.equal(failedScriptName("build-ios.sh exited 2 after 9m 41s"), "build-ios.sh");
   assert.equal(failedScriptName("upload-testflight.sh exited 1 after 2m"), "upload-testflight.sh");
+  assert.equal(
+    failedScriptName("check-testflight-version.sh exited 2 after 3s"),
+    "check-testflight-version.sh",
+  );
   assert.equal(failedScriptName("boom"), "");
 });
 
@@ -352,6 +356,17 @@ test("lastBuildErrors keeps xcodebuild error: lines only", () => {
   assert.match(got, /Provisioning profile/);
   assert.match(got, /ARCHIVE FAILED/);
   assert.doesNotMatch(got, /CFBundleVersion/);
+});
+
+test("explainDeployFailure explains duplicate CFBundleVersion before archive", () => {
+  const raw = "check-testflight-version.sh exited 2 after 2s";
+  const blob = `${raw}\nerror: CFBundleVersion 7 already exists on App Store Connect (state=VALID).\nTESTFLIGHT_VERSION_CHECK=duplicate`;
+  const msg = explainDeployFailure(raw, blob);
+  assert.match(msg, /already on App Store Connect/);
+  assert.match(msg, /CURRENT_PROJECT_VERSION/);
+  assert.match(msg, /Archive was not started/);
+  assert.doesNotMatch(msg, /Do not Ctrl\+C/);
+  assert.doesNotMatch(msg, /Archive or IPA export failed/);
 });
 
 test("explainDeployFailure does not treat archive --mode testflight as an ASC upload failure", () => {

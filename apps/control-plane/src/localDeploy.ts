@@ -320,6 +320,8 @@ export function lastBuildErrors(blob: string, max = 4): string {
       /ERROR:\s*\[altool/i.test(l) ||
       /Expected apple ID argument is missing/i.test(l) ||
       /Could not resolve --apple-id/i.test(l) ||
+      /TESTFLIGHT_VERSION_CHECK=duplicate/i.test(l) ||
+      /already exists on App Store Connect/i.test(l) ||
       /\*\* ARCHIVE FAILED \*\*/i.test(l) ||
       /^The following build commands failed:/i.test(l) ||
       /unbound variable/i.test(l),
@@ -353,6 +355,13 @@ export function explainDeployFailure(raw: string, blob: string): string {
 
   if (/unbound variable/i.test(blob)) {
     return `${raw} — Helper script hit an unset variable (bash set -u). This is a tooling bug, not missing ASC credentials.${last}`;
+  }
+
+  if (
+    /TESTFLIGHT_VERSION_CHECK=duplicate/i.test(blob) ||
+    /already exists on App Store Connect/i.test(blob)
+  ) {
+    return `${raw} — This CFBundleVersion is already on App Store Connect. Bump CURRENT_PROJECT_VERSION / CFBundleVersion in Xcode, commit, and retry. Archive was not started.${last}`;
   }
 
   if (
@@ -658,6 +667,30 @@ export async function runLocalDeploy(
           : mode === "both"
             ? "both"
             : "ota";
+
+    if (mode === "testflight") {
+      throwIfCancelled(jobId);
+      phase(
+        "Phase: confirm CFBundleVersion is new on App Store Connect (before archive)",
+      );
+      const checkArgs = [
+        "--root",
+        checkout,
+        "--project-path",
+        projectPath,
+        "--scheme",
+        scheme,
+        "--configuration",
+        configuration,
+      ];
+      if (dry) checkArgs.push("--dry-run");
+      await runScript(
+        jobId,
+        jobs,
+        path.join(REPO_ROOT, "scripts/check-testflight-version.sh"),
+        checkArgs,
+      );
+    }
 
     phase(
       mode === "testflight"

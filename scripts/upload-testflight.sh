@@ -135,6 +135,13 @@ fi
 if [[ -n "$BUNDLE_SHORT" ]]; then
   echo "CFBundleShortVersionString: $BUNDLE_SHORT"
 fi
+if [[ -n "$BUNDLE_ID" && -n "$BUNDLE_VERSION" ]]; then
+  BSL_DRY_RUN="$DRY_RUN" bsl_asc_assert_unique_cfbundle_version \
+    "$BUNDLE_ID" "$BUNDLE_VERSION" "$BUNDLE_SHORT" || {
+    echo "TESTFLIGHT_UPLOAD=fail" >&2
+    exit 2
+  }
+fi
 if [[ -n "$KEY_ID" ]]; then
   echo "ASC key id: $KEY_ID"
 fi

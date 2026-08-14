@@ -76,7 +76,7 @@ Full checklist (Apple Distribution vs Ad Hoc, UDID, TestFlight, runner): **[docs
 | Want | Choose in the PWA |
 |------|-------------------|
 | Instant install off home Wi‑Fi | **OTA** + Tailscale on the phone |
-| Install anywhere via Apple | **TestFlight** (ASC API key + `.p8`) |
+| Install anywhere via Apple | **TestFlight** (ASC API key + `.p8`; build number is checked against ASC before archive) |
 | USB / Wi‑Fi paired to this Mac | **Direct** (`devicectl`) — iPhone or Apple Watch |
 | Independent watchOS app | Platform **Apple Watch** + Direct (or TestFlight with a container scheme) |
 | Actions runner offline / idle | Engine = **This Mac (local)** (default) |
