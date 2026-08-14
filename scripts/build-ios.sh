@@ -161,14 +161,18 @@ if [[ "$DRY_RUN" != "1" ]]; then
   unset BSL_KEYCHAIN_PASSWORD || true
 fi
 
-# Reorder Embed Foundation/App Extensions before Thin Binary / other scripts when needed.
-# (Fresh tarball checkouts inherit whatever phase order the app repo committed.)
+# Reorder Embed Foundation/App Extensions after Resources / before Thin Binary,
+# and disable user-script sandboxing so embed/CocoaPods scripts can codesign.
+# Fresh tarball checkouts inherit whatever the app repo committed.
 if [[ "$DRY_RUN" == "1" ]]; then
-  echo "DRY_RUN: would fix Embed Foundation Extensions build phase order under $WORK"
+  echo "DRY_RUN: would fix Embed Foundation Extensions build phase order under $ABS_ROOT"
+  echo "DRY_RUN: would disable ENABLE_USER_SCRIPT_SANDBOXING=YES in pbxproj under $ABS_ROOT"
 else
-  bsl_fix_embed_extension_phases "$WORK" || true
+  bsl_fix_embed_extension_phases "$ABS_ROOT" || true
+  bsl_disable_user_script_sandboxing "$ABS_ROOT" || true
 fi
 
+ARCHIVE_LOG="$OUT_DIR/xcodebuild-archive.log"
 ARCHIVE_CMD=(
   xcodebuild "${XCODE_ARGS[@]}"
   -allowProvisioningUpdates
@@ -178,28 +182,37 @@ ARCHIVE_CMD=(
   ENABLE_USER_SCRIPT_SANDBOXING=NO
 )
 if [[ -n "$TEAM_ID" ]]; then
-  ARCHIVE_CMD+=( DEVELOPMENT_TEAM="$TEAM_ID" )
+  ARCHIVE_CMD+=( DEVELOPMENT_TEAM="$TEAM_ID" CODE_SIGN_STYLE=Automatic )
 fi
 echo "Running: ${ARCHIVE_CMD[*]}"
 set +e
-run "${ARCHIVE_CMD[@]}"
-ARCHIVE_STATUS=$?
+set +o pipefail
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "DRY_RUN: ${ARCHIVE_CMD[*]}"
+  ARCHIVE_STATUS=0
+else
+  "${ARCHIVE_CMD[@]}" 2>&1 | tee "$ARCHIVE_LOG"
+  ARCHIVE_STATUS=${PIPESTATUS[0]}
+fi
 set -e
+set -o pipefail
 if [[ "$ARCHIVE_STATUS" -ne 0 ]]; then
-  echo "Archive failed (exit=$ARCHIVE_STATUS). Scanning for Embed Foundation Extensions hints…" >&2
-  # Surface the failing Run Script body when Xcode left it under DerivedData.
-  if [[ -d "$DERIVED_DATA" ]]; then
-    while IFS= read -r script; do
-      echo "---- failed script: $script ----" >&2
-      # shellcheck disable=SC2002
-      tail -n 80 "$script" >&2 || true
-    done < <(find "$DERIVED_DATA" -type f -name 'Script-*.sh' 2>/dev/null | head -5)
+  echo "Archive failed (exit=$ARCHIVE_STATUS)." >&2
+  if [[ -f "$ARCHIVE_LOG" ]]; then
+    echo "---- xcodebuild errors ----" >&2
+    grep -E 'error:|fatal error:|\*\* ARCHIVE FAILED \*\*|The following build commands failed:' "$ARCHIVE_LOG" | tail -n 50 >&2 || true
   fi
-  if grep -Rql "Embed Foundation Extensions\|Embed App Extensions" "$DERIVED_DATA" 2>/dev/null; then
-    echo "Hint: Embed Foundation/App Extensions failed. Common fixes:" >&2
-    echo "  1) In Xcode → Target → Build Phases, drag Embed Foundation Extensions above Thin Binary / Run Script phases." >&2
-    echo "  2) Ensure every app extension target signs with the same Team (automatic) and archives with the app scheme." >&2
-    echo "  3) Run ./scripts/prepare-keychain.sh if codesign is blocked (errSecInteractionNotAllowed)." >&2
+  # Only hint embed-phase fixes when that phase is in the failed-commands list
+  # (DerivedData / the build transcript always mention the phase if the app has extensions).
+  if [[ -f "$ARCHIVE_LOG" ]]; then
+    failed_cmds=$(awk '/The following build commands failed:/,/^$/' "$ARCHIVE_LOG" || true)
+    if echo "$failed_cmds" | grep -Eqi 'Embed (Foundation|App|ExtensionKit) Extensions|Embed Watch Content|\.appex' \
+      || grep -Eqi 'error:.*Embed (Foundation|App|ExtensionKit) Extensions' "$ARCHIVE_LOG"; then
+      echo "Hint: Embed Foundation/App Extensions failed. Common fixes:" >&2
+      echo "  1) In Xcode → Target → Build Phases, drag Embed Foundation Extensions to just after Resources and above Thin Binary / Run Script phases." >&2
+      echo "  2) Ensure every app extension target signs with the same Team (automatic) and archives with the app scheme." >&2
+      echo "  3) Run ./scripts/prepare-keychain.sh if codesign is blocked (errSecInteractionNotAllowed)." >&2
+    fi
   fi
   exit "$ARCHIVE_STATUS"
 fi
