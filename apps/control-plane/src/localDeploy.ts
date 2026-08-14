@@ -305,6 +305,66 @@ function clip(text: string, max = 160): string {
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 }
 
+export function failedScriptName(raw: string): string {
+  const m = String(raw).match(/^([\w.-]+\.sh)\s+exited\b/i);
+  return m?.[1] || "";
+}
+
+/** Last xcodebuild / altool error lines — not mode flags or plist keys. */
+export function lastBuildErrors(blob: string, max = 4): string {
+  const lines = String(blob)
+    .split(/\n/)
+    .map((l) => l.trim())
+    .filter((l) =>
+      /^(error:|fatal error:)/i.test(l) ||
+      /\*\* ARCHIVE FAILED \*\*/i.test(l) ||
+      /^The following build commands failed:/i.test(l),
+    );
+  if (!lines.length) return "";
+  return lines.slice(-max).join(" · ");
+}
+
+const KEYCHAIN_RE =
+  /errSecInteractionNotAllowed|-25308|User interaction is not allowed|CSSMERR_DL_INVALID_ACCESS_CREDENTIALS|codesign.*keychain/i;
+const EMBED_RE =
+  /Hint: Embed Foundation\/App Extensions failed|error:.*Embed (?:Foundation|App|ExtensionKit) Extensions|PhaseScriptExecution.*Embed (?:Foundation|App) Extensions/i;
+const ASC_RE =
+  /Unable to authenticate|No suitable application records|ITMS-\d+|already been uploaded|redundant binary|invalid API key|altool:.*?failed|TESTFLIGHT_UPLOAD=fail|AuthKey_.*not found/i;
+
+/**
+ * Phone-facing hint for a failed helper script.
+ * Must not treat `--mode testflight` or `CFBundleVersion=` in an archive log
+ * as an App Store Connect upload failure.
+ */
+export function explainDeployFailure(raw: string, blob: string): string {
+  const script = failedScriptName(raw);
+  const errors = lastBuildErrors(blob);
+  const last = errors ? ` Last log: ${clip(errors, 240)}` : "";
+
+  if (KEYCHAIN_RE.test(blob)) {
+    return `${raw} — Keychain blocked unattended codesign. On the Mac run ./scripts/prepare-keychain.sh (optional: set BSL_KEYCHAIN_PASSWORD in .env). You cannot approve the Keychain dialog from the iPhone.${last}`;
+  }
+
+  if (script === "upload-testflight.sh" || (script !== "build-ios.sh" && script !== "install-direct.sh" && ASC_RE.test(blob))) {
+    return `${raw} — TestFlight/ASC upload issue. Confirm BSL_ASC_KEY_ID + ISSUER_ID, AuthKey_*.p8, a unique CFBundleVersion, and an ASC app record for this bundle id. Do not Ctrl+C the Mac control-plane shell mid-upload.${last}`;
+  }
+
+  if (script === "build-ios.sh") {
+    if (EMBED_RE.test(blob)) {
+      return `${raw} — Archive failed while embedding app/watch extensions. Embed Foundation Extensions is moved after Resources and user-script sandboxing is disabled on this checkout. If it still fails: every .appex target must use the same Team (automatic signing); run ./scripts/prepare-keychain.sh if codesign is blocked.${last}`;
+    }
+    return `${raw} — Archive or IPA export failed (before TestFlight upload).${
+      last || " Check the live log for xcodebuild error: lines."
+    }`;
+  }
+
+  if (script === "install-direct.sh") {
+    return `${raw} — Direct install failed. Unlock the device, enable Developer Mode, and confirm it is paired in Xcode.${last}`;
+  }
+
+  return last ? `${raw} —${last}` : raw;
+}
+
 /**
  * Run a build helper script, streaming stdout/stderr into the job log as lines
  * arrive (buffered exec made long xcodebuild/altool runs look "stuck" for an hour).
@@ -459,9 +519,13 @@ export async function runScript(
           `job ${jobId.slice(0, 8)} ${basename} FAILED exit=${code ?? "?"}${signal ? ` signal=${signal}` : ""} after ${elapsed}`,
         );
         if (lastLine) logInfo(`job ${jobId.slice(0, 8)} last output: ${clip(lastLine, 200)}`);
+        const errorLines = [...outLines, ...errLines]
+          .filter((l) => /^(error:|fatal error:)/i.test(l.trim()))
+          .slice(-3);
+        const errHint = errorLines.length ? `: ${clip(errorLines.join(" | "), 180)}` : "";
         const err = Object.assign(
           new Error(
-            `${basename} exited ${code ?? "?"}${signal ? ` signal=${signal}` : ""} after ${elapsed}`,
+            `${basename} exited ${code ?? "?"}${signal ? ` signal=${signal}` : ""} after ${elapsed}${errHint}`,
           ),
           { stdout, stderr, code, signal },
         );
@@ -749,26 +813,7 @@ export async function runLocalDeploy(
     }
     const raw = e instanceof Error ? e.message : String(e);
     const blob = `${raw}\n${String((e as { stdout?: string; stderr?: string }).stdout || "")}\n${String((e as { stderr?: string }).stderr || "")}`;
-    let error = raw;
-    if (
-      /errSecInteractionNotAllowed|-25308|User interaction is not allowed|CSSMERR_DL_INVALID_ACCESS_CREDENTIALS|codesign.*keychain|failed to sign/i.test(
-        blob,
-      )
-    ) {
-      error = `${raw} — Keychain blocked unattended codesign. On the Mac run ./scripts/prepare-keychain.sh (optional: set BSL_KEYCHAIN_PASSWORD in .env). You cannot approve the Keychain dialog from the iPhone.`;
-    } else if (
-      /Hint: Embed Foundation\/App Extensions failed|error:.*Embed (?:Foundation|App|ExtensionKit) Extensions|PhaseScriptExecution.*Embed (?:Foundation|App) Extensions/i.test(
-        blob,
-      )
-    ) {
-      error = `${raw} — Archive failed while embedding app/watch extensions. build-ios.sh now moves Embed Foundation Extensions to after Resources (and before Thin Binary / Run Scripts) and turns off user-script sandboxing on this checkout. If it still fails: every .appex target must use the same Team with automatic signing, and run ./scripts/prepare-keychain.sh if codesign is blocked.`;
-    } else if (
-      /Unable to authenticate|AuthKey_|BSL_ASC_KEY|ASC API auth|TESTFLIGHT|altool|No suitable application records|duplicate|CFBundleVersion|ITMS-90018|extension must be/i.test(
-        blob,
-      )
-    ) {
-      error = `${raw} — TestFlight/ASC upload issue. Confirm BSL_ASC_KEY_ID + ISSUER_ID, AuthKey_*.p8, a unique CFBundleVersion, and an ASC app record for this bundle id. Do not Ctrl+C the Mac control-plane shell mid-upload.`;
-    }
+    const error = explainDeployFailure(raw, blob);
     jobs.patch(jobId, {
       status: "failed",
       error,

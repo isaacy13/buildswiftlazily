@@ -28,6 +28,11 @@ import {
   matchesQuery,
   rankMatch,
 } from "../src/search.js";
+import {
+  explainDeployFailure,
+  failedScriptName,
+  lastBuildErrors,
+} from "../src/localDeploy.js";
 
 test("detectXcodeProjects finds workspace, skips Pods, hints watchOS", () => {
   const paths = [
@@ -299,4 +304,48 @@ test("JobStore.findLive returns newest queued/running job", () => {
   assert.equal(jobs.findLive()?.id, live.id);
   jobs.patch(live.id, { status: "cancelled" });
   assert.equal(jobs.findLive(), undefined);
+});
+
+test("failedScriptName reads the helper that exited", () => {
+  assert.equal(failedScriptName("build-ios.sh exited 2 after 9m 41s"), "build-ios.sh");
+  assert.equal(failedScriptName("upload-testflight.sh exited 1 after 2m"), "upload-testflight.sh");
+  assert.equal(failedScriptName("boom"), "");
+});
+
+test("lastBuildErrors keeps xcodebuild error: lines only", () => {
+  const blob = [
+    "Running: xcodebuild --mode testflight",
+    "CFBundleVersion=42",
+    "error: Provisioning profile doesn't include signing certificate",
+    "** ARCHIVE FAILED **",
+  ].join("\n");
+  const got = lastBuildErrors(blob);
+  assert.match(got, /Provisioning profile/);
+  assert.match(got, /ARCHIVE FAILED/);
+  assert.doesNotMatch(got, /CFBundleVersion/);
+});
+
+test("explainDeployFailure does not treat archive --mode testflight as an ASC upload failure", () => {
+  const raw = "build-ios.sh exited 2 after 9m 41s";
+  const blob = `${raw}\n$ build-ios.sh --mode testflight --scheme GuideAI\nCFBundleVersion=7 (must be unique per upload)\nerror: No Account for Team\n** ARCHIVE FAILED **`;
+  const msg = explainDeployFailure(raw, blob);
+  assert.match(msg, /Archive or IPA export failed \(before TestFlight upload\)/);
+  assert.match(msg, /No Account for Team/);
+  assert.doesNotMatch(msg, /TestFlight\/ASC upload issue/);
+  assert.doesNotMatch(msg, /AuthKey_/);
+});
+
+test("explainDeployFailure still explains real altool failures", () => {
+  const raw = "upload-testflight.sh exited 1 after 3m";
+  const blob = `${raw}\nUnable to authenticate with App Store Connect\nITMS-90018`;
+  const msg = explainDeployFailure(raw, blob);
+  assert.match(msg, /TestFlight\/ASC upload issue/);
+});
+
+test("explainDeployFailure explains embed-phase archive failures", () => {
+  const raw = "build-ios.sh exited 65 after 9m";
+  const blob = `${raw}\nHint: Embed Foundation/App Extensions failed. Common fixes:`;
+  const msg = explainDeployFailure(raw, blob);
+  assert.match(msg, /embedding app\/watch extensions/);
+  assert.doesNotMatch(msg, /TestFlight\/ASC/);
 });
