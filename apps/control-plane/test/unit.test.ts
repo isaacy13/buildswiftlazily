@@ -335,6 +335,17 @@ test("explainDeployFailure does not treat archive --mode testflight as an ASC up
   assert.doesNotMatch(msg, /AuthKey_/);
 });
 
+test("explainDeployFailure treats bash unbound variable as a tooling bug", () => {
+  const raw = "upload-testflight.sh exited 1 after 0s";
+  const blob = `${raw}\nscripts/upload-testflight.sh: line 215: BUNDLE_ID…: unbound variable`;
+  const msg = explainDeployFailure(raw, blob);
+  assert.match(msg, /unset variable/);
+  assert.match(msg, /tooling bug/);
+  assert.match(msg, /unbound variable/);
+  assert.doesNotMatch(msg, /BSL_ASC_KEY_ID/);
+  assert.doesNotMatch(msg, /AuthKey_/);
+});
+
 test("explainDeployFailure still explains real altool failures", () => {
   const raw = "upload-testflight.sh exited 1 after 3m";
   const blob = `${raw}\nUnable to authenticate with App Store Connect\nITMS-90018`;

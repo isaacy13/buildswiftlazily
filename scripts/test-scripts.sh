@@ -45,6 +45,35 @@ echo "$out3b" | grep -q -- '--bundle-id com.demo.app'
 echo "$out3b" | grep -q -- '--bundle-version 42'
 echo "$out3b" | grep -q -- '--bundle-short-version-string 1.2.3'
 
+# Unbraced $VAR + ellipsis is a different identifier under bash set -u (macOS).
+python3 - "$ROOT/scripts" <<'PY'
+import pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+pat = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*…")
+skip = {"test-scripts.sh", "validate-macos.sh"}
+bad = []
+for p in sorted(root.glob("*.sh")):
+    if p.name in skip:
+        continue
+    for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+        if line.lstrip().startswith("#"):
+            continue
+        if pat.search(line):
+            bad.append(f"{p.name}:{i}: {line.strip()}")
+if bad:
+    print("unbraced $VAR… would fail set -u:\n" + "\n".join(bad), file=sys.stderr)
+    sys.exit(1)
+text = (root / "upload-testflight.sh").read_text(encoding="utf-8")
+if "for ${BUNDLE_ID}…" not in text:
+    print("upload-testflight.sh must brace BUNDLE_ID before ellipsis", file=sys.stderr)
+    sys.exit(1)
+PY
+BUNDLE_ID="com.demo.app"
+(
+  set -u
+  echo "Looking up App Store Connect Apple ID for ${BUNDLE_ID}…"
+) >/dev/null
+
 # ITMS-90018 helpers: materialize archive aliases; reject non-zip / symlink bundles
 # shellcheck source=lib.sh
 source "$ROOT/scripts/lib.sh"

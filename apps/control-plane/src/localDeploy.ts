@@ -318,7 +318,8 @@ export function lastBuildErrors(blob: string, max = 4): string {
     .filter((l) =>
       /^(error:|fatal error:)/i.test(l) ||
       /\*\* ARCHIVE FAILED \*\*/i.test(l) ||
-      /^The following build commands failed:/i.test(l),
+      /^The following build commands failed:/i.test(l) ||
+      /unbound variable/i.test(l),
     );
   if (!lines.length) return "";
   return lines.slice(-max).join(" · ");
@@ -345,6 +346,10 @@ export function explainDeployFailure(raw: string, blob: string): string {
 
   if (KEYCHAIN_RE.test(blob)) {
     return `${raw} — Keychain blocked unattended codesign. On the Mac run ./scripts/prepare-keychain.sh (optional: set BSL_KEYCHAIN_PASSWORD in .env). You cannot approve the Keychain dialog from the iPhone.${last}`;
+  }
+
+  if (/unbound variable/i.test(blob)) {
+    return `${raw} — Helper script hit an unset variable (bash set -u). This is a tooling bug, not missing ASC credentials.${last}`;
   }
 
   if (script === "upload-testflight.sh" || (script !== "build-ios.sh" && script !== "install-direct.sh" && ASC_RE.test(blob))) {
