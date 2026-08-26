@@ -1,0 +1,14 @@
+{
+  "name": "buildswiftlazily control plane",
+  "install": "./scripts/bootstrap.sh",
+  "terminals": [
+    {
+      "name": "control-plane",
+      "command": "set -a && . ./.env && set +a && cd apps/control-plane && npm run dev",
+      "description": "Control-plane API (Hono) + PWA on http://127.0.0.1:8787. Auth token is BSL_API_TOKEN in .env."
+    }
+  ],
+  "ports": [
+    { "name": "control-plane", "port": 8787 }
+  ]
+}
